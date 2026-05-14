@@ -1,0 +1,319 @@
+import type { ChartEvent } from "../chart/types";
+import { midiToFreq } from "../audio/midi-to-freq";
+import {
+  classifyTiming,
+  type NoteHit,
+  type ScoreEventResult,
+  type Verdict,
+  type VerdictWindowsOverride,
+} from "./engine";
+import type { DebugDecisionOutcome, ExpectedEventSnapshot } from "./debug-capture";
+import { effectiveOpenStringMidi, hzToMidi } from "./pitch";
+import {
+  inferMidiFromSpectrum,
+  spectrumBandEnergySum,
+  sumBandMagnitudes,
+} from "./spectrum";
+import { yinAroundExpected } from "./yin";
+
+export const POLY_SUPPORT_THRESHOLD = 0.18;
+
+export const MONO_CENTS_TOLERANCE = 50;
+
+/** Reject noisy / unpitched detection */
+export const YIN_CMNDF_MAX = 0.2;
+
+const HARM_WEIGHTS = [1.0, 0.6, 0.4, 0.25] as const;
+
+/** Optional overrides for replay / tuning UI; omitted fields use production defaults. */
+export type OnsetRecognizerTuning = {
+  timingWindows?: VerdictWindowsOverride;
+  monoCentsTolerance?: number;
+  polySupportThreshold?: number;
+  yinCmndfMax?: number;
+};
+
+export function noteHarmonicSupport(
+  spectrum: Float32Array,
+  sampleRate: number,
+  midiNote: number,
+  normEnergy: number,
+): number {
+  const f0 = midiToFreq(midiNote);
+  let acc = 0;
+  for (let h = 1; h <= 4; h++) {
+    const f = f0 * h;
+    if (f >= sampleRate / 2 - 20) break;
+    const w = HARM_WEIGHTS[h - 1] ?? 0;
+    acc += w * sumBandMagnitudes(spectrum, sampleRate, f, 0.5);
+  }
+  return normEnergy > 1e-12 ? acc / normEnergy : 0;
+}
+
+export function recognizePolyNotes(
+  ev: ChartEvent,
+  spectrum: Float32Array,
+  sampleRate: number,
+  verdict: Verdict,
+  timingErrorMs: number,
+  supportThreshold = POLY_SUPPORT_THRESHOLD,
+): NoteHit[] {
+  return recognizePolyNotesWithTrace(
+    ev,
+    spectrum,
+    sampleRate,
+    verdict,
+    timingErrorMs,
+    supportThreshold,
+  ).notes;
+}
+
+export type PolyRecognizerTrace = {
+  normEnergy: number;
+  supportThreshold: number;
+  perNote: Array<{
+    string: number;
+    midi: number;
+    support: number;
+    pitchOk: boolean;
+  }>;
+};
+
+export function recognizePolyNotesWithTrace(
+  ev: ChartEvent,
+  spectrum: Float32Array,
+  sampleRate: number,
+  verdict: Verdict,
+  timingErrorMs: number,
+  supportThreshold = POLY_SUPPORT_THRESHOLD,
+): { notes: NoteHit[]; trace: PolyRecognizerTrace } {
+  const norm = spectrumBandEnergySum(spectrum, sampleRate);
+  const normSafe = norm > 1e-12 ? norm : 1e-12;
+  const perNote: PolyRecognizerTrace["perNote"] = [];
+
+  const notes = ev.notes.map((n) => {
+    if (n.dead) {
+      return {
+        string: n.string,
+        expectedMidi: n.midi,
+        pitchOk: true,
+        verdict,
+        timingErrorMs,
+      };
+    }
+    const support = noteHarmonicSupport(spectrum, sampleRate, n.midi, normSafe);
+    const pitchOk = norm >= 1e-8 && support >= supportThreshold;
+    perNote.push({
+      string: n.string,
+      midi: n.midi,
+      support,
+      pitchOk,
+    });
+    return {
+      string: n.string,
+      expectedMidi: n.midi,
+      pitchOk,
+      verdict,
+      timingErrorMs,
+    };
+  });
+
+  return {
+    notes,
+    trace: { normEnergy: norm, supportThreshold, perNote },
+  };
+}
+
+export type MonoRecognizerTrace = {
+  yinHz: number | null;
+  cmndfMin: number | null;
+  centsPerNote: Array<{
+    string: number;
+    midi: number;
+    cents: number | null;
+  }>;
+};
+
+export type MonoRecognizeResult = {
+  notes: NoteHit[];
+  detectedMidi: number | null;
+  detectedHz: number | null;
+  trace: MonoRecognizerTrace;
+};
+
+export function recognizeMonoNotes(
+  ev: ChartEvent,
+  waveSnippet: Float32Array,
+  spectrum: Float32Array,
+  sampleRate: number,
+  verdict: Verdict,
+  timingErrorMs: number,
+  tuning?: Pick<OnsetRecognizerTuning, "monoCentsTolerance" | "yinCmndfMax">,
+): MonoRecognizeResult {
+  const centsTol = tuning?.monoCentsTolerance ?? MONO_CENTS_TOLERANCE;
+  const yinMax = tuning?.yinCmndfMax ?? YIN_CMNDF_MAX;
+  const sounding = ev.notes.filter((n) => !n.dead);
+  const primary = sounding[0] ?? ev.notes[0];
+  const expectedHz = midiToFreq(primary.midi);
+  const y = yinAroundExpected(waveSnippet, sampleRate, expectedHz, 2);
+
+  const cmOk = y != null && y.cmndfMin <= yinMax;
+  const detectedHz = y?.hz ?? null;
+  const detectedMidi =
+    detectedHz != null ? hzToMidi(detectedHz) : inferMidiFromSpectrum(spectrum, sampleRate);
+
+  const centsPerNote: MonoRecognizerTrace["centsPerNote"] = [];
+
+  const notes: NoteHit[] = ev.notes.map((n) => {
+    if (n.dead) {
+      return {
+        string: n.string,
+        expectedMidi: n.midi,
+        pitchOk: true,
+        verdict,
+        timingErrorMs,
+      };
+    }
+    let pitchOk = false;
+    let cents: number | null = null;
+    if (y != null) {
+      cents = 1200 * Math.log2(y.hz / midiToFreq(n.midi));
+    }
+    centsPerNote.push({ string: n.string, midi: n.midi, cents });
+    if (cmOk && y != null && cents != null) {
+      pitchOk = Math.abs(cents) <= centsTol;
+    }
+    return {
+      string: n.string,
+      expectedMidi: n.midi,
+      pitchOk,
+      verdict,
+      timingErrorMs,
+    };
+  });
+
+  const trace: MonoRecognizerTrace = {
+    yinHz: detectedHz,
+    cmndfMin: y?.cmndfMin ?? null,
+    centsPerNote,
+  };
+
+  return { notes, detectedMidi, detectedHz, trace };
+}
+
+/** Result of scoring an onset against one chart event, including tuner/debug traces */
+export type ScoreOnsetAgainstEventResult = ScoreEventResult & {
+  trace: MonoRecognizerTrace | PolyRecognizerTrace;
+  isPoly: boolean;
+};
+
+export function scoreOnsetAgainstEvent(
+  ev: ChartEvent,
+  songTimeSec: number,
+  waveSnippet: Float32Array,
+  spectrum: Float32Array,
+  sampleRate: number,
+  inputLatencyMs: number,
+  tuning?: OnsetRecognizerTuning,
+): ScoreOnsetAgainstEventResult {
+  const tMs = songTimeSec * 1000;
+  const centerMs = ev.t0 * 1000;
+  const timingErrorMs = tMs + inputLatencyMs - centerMs;
+  const verdict = classifyTiming(timingErrorMs, tuning?.timingWindows);
+
+  const sounding = ev.notes.filter((n) => !n.dead);
+  const usePoly = sounding.length > 1;
+  const polyTh = tuning?.polySupportThreshold ?? POLY_SUPPORT_THRESHOLD;
+
+  if (usePoly) {
+    const { notes, trace } = recognizePolyNotesWithTrace(
+      ev,
+      spectrum,
+      sampleRate,
+      verdict,
+      timingErrorMs,
+      polyTh,
+    );
+    const dm = inferMidiFromSpectrum(spectrum, sampleRate);
+    const hz = dm != null ? midiToFreq(dm) : null;
+    return {
+      eventId: ev.id,
+      detectedMidi: dm,
+      detectedHz: hz,
+      notes,
+      trace,
+      isPoly: true,
+    };
+  }
+
+  const mono = recognizeMonoNotes(ev, waveSnippet, spectrum, sampleRate, verdict, timingErrorMs, tuning);
+  return {
+    eventId: ev.id,
+    detectedMidi: mono.detectedMidi,
+    detectedHz: mono.detectedHz,
+    notes: mono.notes,
+    trace: mono.trace,
+    isPoly: false,
+  };
+}
+
+/** Capo-aware string/fret hint from sounding MIDI vs tuning */
+export function inferPlayedStringFret(
+  detectedMidi: number,
+  tuning: string[],
+  capoFret?: number | null,
+): { string: number; fret: number } | null {
+  let best: { string: number; fret: number; score: number } | null = null;
+  const cap = capoFret ?? 0;
+  for (let s = 1; s <= 6; s++) {
+    const open = effectiveOpenStringMidi(tuning, s, cap);
+    if (open == null) continue;
+    const delta = detectedMidi - open;
+    const fret = Math.round(delta);
+    if (Math.abs(delta - fret) > 0.35) continue;
+    if (fret < 0 || fret > 24) continue;
+    const score = Math.abs(delta - fret);
+    if (!best || score < best.score) best = { string: s, fret, score };
+  }
+  return best ? { string: best.string, fret: best.fret } : null;
+}
+
+export function expectedSnapshotToChartEvent(e: ExpectedEventSnapshot): ChartEvent {
+  const kind = e.kind === "chord" ? "chord" : "note";
+  return {
+    id: e.id,
+    t0: e.t0,
+    t1: e.t0,
+    kind,
+    notes: e.notes.map((n) => ({
+      string: n.string,
+      fret: 0,
+      midi: n.midi,
+      dead: n.dead ?? false,
+    })),
+  };
+}
+
+/**
+ * Mirrors live mic debug labeling in PracticeClient — after scoring an onset against `ev`;
+ * `appliedPitchHit` means at least one sounding string was accepted as in-time + in-tune.
+ */
+export function classifyOnsetDebugOutcome(
+  appliedPitchHit: boolean,
+  r: ScoreOnsetAgainstEventResult,
+  ev: ChartEvent,
+): DebugDecisionOutcome {
+  if (appliedPitchHit) return "accepted";
+
+  const verdict = r.notes[0]?.verdict ?? "miss";
+  let anyPitchOkSounding = false;
+  for (let i = 0; i < ev.notes.length; i++) {
+    const cn = ev.notes[i];
+    const nh = r.notes[i];
+    if (!cn || !nh || cn.dead) continue;
+    if (nh.pitchOk) anyPitchOkSounding = true;
+  }
+
+  if (verdict === "miss" && anyPitchOkSounding) return "timing-miss";
+  return "wrong-pitch";
+}

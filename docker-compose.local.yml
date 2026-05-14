@@ -1,0 +1,83 @@
+# Local Postgres + MinIO + optional one-shot Kysely migrator. App on host: `npm run dev` (use `.env`).
+#
+# After pulling new migrations, apply them (stack already running):
+#   docker compose --env-file .env -f docker-compose.local.yml run --rm migrate
+# Or: `npm run db:migrate` with DATABASE_URL pointing at this Postgres.
+#
+# Infra + migrations:
+#   docker compose --env-file .env -f docker-compose.local.yml up -d postgres minio migrate
+#
+# Postgres + MinIO only:
+#   docker compose --env-file .env -f docker-compose.local.yml up -d postgres minio
+#
+# Copy `.env.example` to `.env` first.
+#
+# MinIO data is bind-mounted to `./.docker/minio-data` (same disk as the repo) so local dev
+# avoids XMinioStorageFull when Docker’s default volume location is on a nearly full root disk.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-mesician}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mesician}
+      POSTGRES_DB: ${POSTGRES_DB:-mesician}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - ./.docker/pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 3s
+      timeout: 5s
+      retries: 15
+      start_period: 5s
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minio12345}
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - ./.docker/minio-data:/data
+
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile.migrate
+    volumes:
+      # Always use repo migrations/scripts without rebuilding the image after adding SQL files.
+      - ./migrations:/app/migrations:ro
+      - ./scripts/migrate.ts:/app/scripts/migrate.ts:ro
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-mesician}:${POSTGRES_PASSWORD:-mesician}@postgres:5432/${POSTGRES_DB:-mesician}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  # Optional: run the Next.js app in Docker (default workflow is `npm run dev` on the host).
+  # app:
+  #   build: .
+  #   ports:
+  #     - "3000:3000"
+  #   environment:
+  #     DATABASE_URL: postgres://${POSTGRES_USER:-mesician}:${POSTGRES_PASSWORD:-mesician}@postgres:5432/${POSTGRES_DB:-mesician}
+  #     JWT_SECRET: ${JWT_SECRET}
+  #     S3_ENDPOINT: http://minio:9000
+  #     S3_REGION: ${S3_REGION:-us-east-1}
+  #     S3_ACCESS_KEY: ${MINIO_ROOT_USER:-minio}
+  #     S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minio12345}
+  #     S3_BUCKET: ${S3_BUCKET:-mesician}
+  #     NEXT_PUBLIC_APP_URL: ${NEXT_PUBLIC_APP_URL:-http://localhost:3000}
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #     migrate:
+  #       condition: service_completed_successfully
+  #     minio:
+  #       condition: service_started

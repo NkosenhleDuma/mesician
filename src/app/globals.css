@@ -1,26 +1,32 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+  --background: #0a0a0f;
+  --foreground: #ededed;
 }
 
 body {
-  background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--background);
+  min-height: 100vh;
+}
+
+@media (orientation: portrait) {
+  .landscape-hint::after {
+    content: "Rotate to landscape for the best practice layout.";
+    display: block;
+    margin-top: 0.5rem;
+    font-size: 0.875rem;
+    color: #a1a1aa;
+  }
+}
+
+/** Body scroll lock while mobile practice overlay is open */
+body.mobile-no-scroll {
+  overflow: hidden;
+  position: fixed;
+  width: 100%;
+  min-height: 100dvh;
+  height: 100%;
+  touch-action: none;
 }

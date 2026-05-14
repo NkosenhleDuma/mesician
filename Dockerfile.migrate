@@ -1,0 +1,8 @@
+# Slim one-shot migrator (Kysely + pg + tsx only — versions aligned with package-lock).
+FROM node:24-bookworm-slim
+WORKDIR /app
+RUN npm install kysely@0.28.16 pg@8.20.0 tsx@4.21.0 && npm cache clean --force
+COPY migrations ./migrations
+COPY scripts/migrate.ts ./scripts/
+ENV NODE_ENV=production
+CMD ["npx", "tsx", "scripts/migrate.ts"]
