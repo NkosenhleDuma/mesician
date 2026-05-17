@@ -23,7 +23,7 @@ All routes expect JSON unless noted. Authenticated routes use the `mesician_sess
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| POST | `/api/songs/:id/upload` | `multipart/form-data` field **`file`** (`.gp`, `.gp3`, `.gp4`, `.gp5`, or `.gpx`). Parses GP, writes MinIO, rebuilds tracks, and recomputes difficulty |
+| POST | `/api/songs/:id/upload` | `multipart/form-data` field **`file`** (`.gp`, `.gp3`, `.gp4`, `.gp5`, or `.gpx`). Parses GP, writes MinIO, rebuilds tracks, and recomputes difficulty. **Re-upload** after parser timing fixes to refresh stored charts (see [troubleshooting](troubleshooting.md)). |
 | GET | `/api/songs/:id/tracks` | Track metadata |
 
 ## Charts

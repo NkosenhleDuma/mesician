@@ -63,11 +63,35 @@ export const debugDecisionSchema = z.object({
           }),
         ),
       }),
+      z.object({
+        kind: z.literal("bp"),
+        evidenceMidis: z.array(z.number()),
+        dominantMidi: z.number().nullable(),
+      }),
     ])
     .nullable(),
   spectrum: z.array(z.number()),
   waveSnippet: z.array(z.number()),
   detectedMidiGlob: z.number().nullable(),
+  pitchTelemetry: z
+    .object({
+      tsMs: z.number(),
+      avgInferMs: z.number(),
+      p95InferMs: z.number(),
+      avgDecodeMs: z.number(),
+      avgResampleMs: z.number(),
+      avgSchedulerLagMs: z.number(),
+      inflight: z.number(),
+      droppedWindowsTotal: z.number(),
+      windowsPerSec: z.number(),
+      rmsAvg: z.number(),
+      activeNotesNow: z.number(),
+      notesEmittedPerSec: z.number(),
+      avgNoteOnLatencyMs: z.number(),
+      p95NoteOnLatencyMs: z.number(),
+    })
+    .nullable()
+    .optional(),
 });
 
 export const debugReportBodySchema = z.object({

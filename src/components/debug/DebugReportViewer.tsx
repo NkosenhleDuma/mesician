@@ -440,9 +440,33 @@ function DecisionCard({
               ))}
             </ul>
           )}
+          {d.trace?.kind === "bp" && (
+            <div className="mt-1 space-y-1 text-xs text-zinc-400">
+              <p className="text-zinc-500">
+                Basic Pitch evidence (MIDI){d.trace.dominantMidi != null ? ` · dominant ${d.trace.dominantMidi}` : ""}
+              </p>
+              <p className="font-mono break-all text-[11px] text-zinc-300">
+                {d.trace.evidenceMidis.length ? d.trace.evidenceMidis.join(", ") : "—"}
+              </p>
+            </div>
+          )}
           {!d.trace && <p className="text-xs text-zinc-600">No trace</p>}
         </div>
       </div>
+
+      {d.pitchTelemetry != null ? (
+        <details className="mt-3 text-xs text-zinc-500">
+          <summary className="cursor-pointer text-zinc-400 hover:text-zinc-300">Basic Pitch metrics</summary>
+          <div className="mt-2 grid gap-1 pl-2 font-mono text-[11px] text-zinc-400 sm:grid-cols-2">
+            <div>infer avg {d.pitchTelemetry.avgInferMs.toFixed(1)} ms</div>
+            <div>p95 infer {d.pitchTelemetry.p95InferMs.toFixed(1)} ms</div>
+            <div>dropped wins {d.pitchTelemetry.droppedWindowsTotal}</div>
+            <div>inflight {d.pitchTelemetry.inflight}</div>
+            <div>rms avg {d.pitchTelemetry.rmsAvg.toFixed(5)}</div>
+            <div>notes/s {d.pitchTelemetry.notesEmittedPerSec.toFixed(1)}</div>
+          </div>
+        </details>
+      ) : null}
 
       <details className="mt-3 text-xs text-zinc-500">
         <summary className="cursor-pointer text-zinc-400 hover:text-zinc-300">Flux & candidates</summary>

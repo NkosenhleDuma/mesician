@@ -17,35 +17,44 @@ function noopMidiHandler(): midi.IMidiFileHandler {
   };
 }
 
-/** AlphaTab only assigns `beat.timer` during MIDI generation when `showTimer` is true. */
-function enableBeatTimersForScore(score: model.Score): void {
-  for (const track of score.tracks) {
-    for (const staff of track.staves) {
-      for (const bar of staff.bars) {
-        for (const voice of bar.voices) {
-          for (const beat of voice.beats) {
-            beat.showTimer = true;
-          }
-        }
-      }
-    }
+/** AlphaTab MIDI resolution — must match `MidiUtils.QuarterTime` (960), not MIDI file TPQ 480. */
+const TICKS_PER_QUARTER = 960;
+
+type SyncSlice = { synthTick: number; synthTimeMs: number; synthBpm: number };
+
+function normalizeGeneratorSyncPoints(
+  points: readonly { synthTick: number; synthTime: number; synthBpm: number }[],
+): SyncSlice[] {
+  const sorted = [...points].sort((a, b) => a.synthTick - b.synthTick || a.synthTime - b.synthTime);
+  const out: SyncSlice[] = [];
+  for (const p of sorted) {
+    const cur: SyncSlice = { synthTick: p.synthTick, synthTimeMs: p.synthTime, synthBpm: p.synthBpm };
+    const last = out[out.length - 1];
+    if (last && last.synthTick === cur.synthTick) out[out.length - 1] = cur;
+    else out.push(cur);
   }
+  return out;
 }
 
-/**
- * MidiFileGenerator uses one `_currentTime` and walks every track per master bar; that stacks time across
- * tracks in the same measure. Run generation with only this track so `beat.timer` matches the song timeline.
- */
-function assignBeatTimersForTrack(score: model.Score, settings: Settings, trackIndex: number): void {
-  const allTracks = score.tracks.slice();
-  const single = allTracks[trackIndex];
-  if (!single) return;
-  score.tracks = [single];
-  try {
-    new midi.MidiFileGenerator(score, settings, noopMidiHandler()).generate();
-  } finally {
-    score.tracks = allTracks;
-  }
+function ticksToSeconds(deltaTicks: number, bpm: number): number {
+  const b = bpm > 0 ? bpm : 120;
+  return (deltaTicks / TICKS_PER_QUARTER) * (60 / b);
+}
+
+/** Maps absolute MIDI ticks from MidiTickLookup to wall-clock seconds (repeats expanded). */
+function buildSynthTickToSeconds(normalized: SyncSlice[], fallbackBpm: number): (tick: number) => number {
+  return (tick: number) => {
+    if (normalized.length === 0) return ticksToSeconds(tick, fallbackBpm);
+    let lo = 0;
+    let hi = normalized.length - 1;
+    while (lo < hi) {
+      const mid = Math.ceil((lo + hi) / 2);
+      if (normalized[mid].synthTick <= tick) lo = mid;
+      else hi = mid - 1;
+    }
+    const base = normalized[lo];
+    return base.synthTimeMs / 1000 + ticksToSeconds(tick - base.synthTick, base.synthBpm);
+  };
 }
 
 function tuningToStrings(staff: model.Staff): string[] {
@@ -89,9 +98,6 @@ function collectTech(note: model.Note): string[] {
   return tech;
 }
 
-/** AlphaTab quarter-note resolution used in MIDI timing (matches MidiUtils in generator). */
-const TICKS_PER_QUARTER = 480;
-
 function buildTempoMapFromSyncPoints(score: model.Score): { t: number; bpm: number }[] {
   const points = midi.MidiFileGenerator.generateSyncPoints(score, false);
   const raw = points.map((p) => ({ t: p.synthTime / 1000, bpm: p.synthBpm }));
@@ -103,52 +109,6 @@ function buildTempoMapFromSyncPoints(score: model.Score): { t: number; bpm: numb
   }
   if (out.length === 0) return [{ t: 0, bpm: score.tempo }];
   return out;
-}
-
-function bpmAtBeat(beat: model.Beat, score: model.Score): number {
-  const mb = beat.voice.bar.masterBar;
-  const barDuration = mb.calculateDuration();
-  const ratio = barDuration > 0 ? beat.playbackStart / barDuration : 0;
-  const sorted = mb.tempoAutomations.slice().sort((a, b) => a.ratioPosition - b.ratioPosition);
-  let tempo = mb.tempoAutomations.length > 0 ? mb.tempoAutomations[0].value : score.tempo;
-  for (const a of sorted) {
-    if (a.ratioPosition <= ratio + 1e-12) tempo = a.value;
-  }
-  return tempo > 0 ? tempo : score.tempo;
-}
-
-function playbackDurationSeconds(playbackDurationTicks: number, bpm: number): number {
-  const b = bpm > 0 ? bpm : 120;
-  return (playbackDurationTicks / TICKS_PER_QUARTER) * (60 / b);
-}
-
-/** Next note end time from following beats with filled timers, else BPM-based duration. */
-function resolveT1(beat: model.Beat, t0: number, score: model.Score, staff: model.Staff, voice: model.Voice): number {
-  let b: model.Beat | null = beat.nextBeat;
-  while (b) {
-    if (b.timer != null) return Math.max(t0 + 0.02, b.timer / 1000);
-    b = b.nextBeat;
-  }
-  const bars = staff.bars;
-  const bar = voice.bar;
-  const barIdx = bars.indexOf(bar);
-  if (barIdx >= 0) {
-    let seenCurrent = false;
-    for (let i = barIdx; i < bars.length; i++) {
-      const v = bars[i].voices[0];
-      if (!v) continue;
-      for (const bb of v.beats) {
-        if (i === barIdx && !seenCurrent) {
-          if (bb === beat) seenCurrent = true;
-          continue;
-        }
-        if (bb.timer != null) return Math.max(t0 + 0.02, bb.timer / 1000);
-      }
-    }
-  }
-  const bpm = bpmAtBeat(beat, score);
-  const dur = playbackDurationSeconds(beat.playbackDuration, bpm);
-  return t0 + Math.max(0.02, dur);
 }
 
 function buildTimeSig(score: { masterBars: { timeSignatureNumerator: number; timeSignatureDenominator: number }[] }): {
@@ -216,78 +176,30 @@ function staffChartMeta(metaBase: Omit<ChartMeta, "trackName">, staff: model.Sta
   };
 }
 
-export type ParsedTrackSummary = {
-  trackIndex: number;
-  name: string;
-  instrument: string | null;
-  tuning: string[];
-  isGuitar: boolean;
-};
-
-export function parseGpToCharts(buffer: Buffer): {
-  metaBase: Omit<ChartMeta, "trackName">;
-  tracks: ParsedTrackSummary[];
-  chartsByTrack: ChartJson[];
-} {
-  const data = new Uint8Array(buffer);
-  const score = importer.ScoreLoader.loadScoreFromBytes(data);
-  const settings = new Settings();
-  score.finish(settings);
-  enableBeatTimersForScore(score);
-
-  const metaBase: Omit<ChartMeta, "trackName"> = {
-    songTitle: score.title || "Untitled",
-    tempoMap: buildTempoMapFromSyncPoints(score),
-    timeSig: buildTimeSig(score),
-    tuning: ["E2", "A2", "D3", "G3", "B3", "E4"],
-  };
-
-  const tracks: ParsedTrackSummary[] = [];
-  const chartsByTrack: ChartJson[] = [];
-
-  score.tracks.forEach((track, trackIndex) => {
-    assignBeatTimersForTrack(score, settings, trackIndex);
-    const staff = track.staves[0];
-    const isGuitar = !track.isPercussion && !!staff?.isStringed;
-    const tuning = staff ? tuningToStrings(staff) : metaBase.tuning;
-    tracks.push({
-      trackIndex,
-      name: track.name || `Track ${trackIndex + 1}`,
-      instrument: track.playbackInfo != null ? String(track.playbackInfo.program) : null,
-      tuning,
-      isGuitar,
-    });
-
-    const events: ChartEvent[] = [];
-    if (!staff) {
-      chartsByTrack.push({
-        version: 1,
-        meta: { ...metaBase, trackName: track.name || `Track ${trackIndex + 1}`, tuning },
-        events,
-        duration: 0,
-      });
-      return;
-    }
-
-    for (const bar of staff.bars) {
-      const voice = bar.voices[0];
-      if (!voice) continue;
-      for (const beat of voice.beats) {
+function chartEventsFromPlaybackLookup(
+  tickLookup: midi.MidiTickLookup,
+  synthTickToSec: (tick: number) => number,
+  track: model.Track,
+): ChartEvent[] {
+  const events: ChartEvent[] = [];
+  for (const mb of tickLookup.masterBars) {
+    let slice: midi.BeatTickLookup | null = mb.firstBeat;
+    while (slice) {
+      for (const item of slice.highlightedBeats) {
+        if (item.beat.voice.bar.staff.track !== track) continue;
+        const beat = item.beat;
         if (beat.isEmpty || beat.isRest) continue;
         const visibleNotes = beat.notes.filter((n) => n.isVisible && !n.isPercussion);
         if (visibleNotes.length === 0) continue;
 
-        const t0 = (beat.timer ?? 0) / 1000;
-        const t1 = resolveT1(beat, t0, score, staff, voice);
+        const absTickStart = mb.start + item.playbackStart;
+        const absTickEnd = absTickStart + beat.playbackDuration;
+        const t0 = synthTickToSec(absTickStart);
+        let t1 = synthTickToSec(absTickEnd);
+        if (t1 < t0 + 0.02) t1 = t0 + 0.02;
 
         const notes = visibleNotes.map((n) => {
-          const vib =
-            n.vibrato !== model.VibratoType.None || beat.vibrato !== model.VibratoType.None;
-          
-
-          if (n.fret < 0) {
-            console.log("n", n);
-          }
+          const vib = n.vibrato !== model.VibratoType.None || beat.vibrato !== model.VibratoType.None;
           const fret = n.fret < 0 ? 0 : n.fret;
           const dead = n.isDead || n.fret < 0;
           return {
@@ -315,6 +227,76 @@ export function parseGpToCharts(buffer: Buffer): {
           tech: tech.size ? Array.from(tech) : undefined,
         });
       }
+      slice = slice.nextBeat;
+    }
+  }
+  return events;
+}
+
+export type ParsedTrackSummary = {
+  trackIndex: number;
+  name: string;
+  instrument: string | null;
+  tuning: string[];
+  isGuitar: boolean;
+};
+
+export function parseGpToCharts(buffer: Buffer): {
+  metaBase: Omit<ChartMeta, "trackName">;
+  tracks: ParsedTrackSummary[];
+  chartsByTrack: ChartJson[];
+} {
+  const data = new Uint8Array(buffer);
+  const score = importer.ScoreLoader.loadScoreFromBytes(data);
+  const settings = new Settings();
+  score.finish(settings);
+
+  const metaBase: Omit<ChartMeta, "trackName"> = {
+    songTitle: score.title || "Untitled",
+    tempoMap: buildTempoMapFromSyncPoints(score),
+    timeSig: buildTimeSig(score),
+    tuning: ["E2", "A2", "D3", "G3", "B3", "E4"],
+  };
+
+  const tracks: ParsedTrackSummary[] = [];
+  const chartsByTrack: ChartJson[] = [];
+
+  const allTracks = score.tracks.slice();
+
+  score.tracks.forEach((track, trackIndex) => {
+    const staff = track.staves[0];
+    const isGuitar = !track.isPercussion && !!staff?.isStringed;
+    const tuning = staff ? tuningToStrings(staff) : metaBase.tuning;
+    tracks.push({
+      trackIndex,
+      name: track.name || `Track ${trackIndex + 1}`,
+      instrument: track.playbackInfo != null ? String(track.playbackInfo.program) : null,
+      tuning,
+      isGuitar,
+    });
+
+    const events: ChartEvent[] = [];
+    if (!staff) {
+      chartsByTrack.push({
+        version: 1,
+        meta: { ...metaBase, trackName: track.name || `Track ${trackIndex + 1}`, tuning },
+        events,
+        duration: 0,
+      });
+      return;
+    }
+
+    score.tracks = [track];
+    try {
+      const gen = new midi.MidiFileGenerator(score, settings, noopMidiHandler());
+      gen.generate();
+      const synthTickToSec = buildSynthTickToSeconds(
+        normalizeGeneratorSyncPoints(gen.syncPoints),
+        score.tempo,
+      );
+      events.push(...chartEventsFromPlaybackLookup(gen.tickLookup, synthTickToSec, track));
+    } finally {
+      score.tracks = allTracks;
     }
 
     events.sort((a, b) => a.t0 - b.t0);

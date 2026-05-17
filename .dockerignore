@@ -3,3 +3,5 @@ node_modules
 .git
 *.md
 .env*.local
+# Local compose bind mounts (Postgres/MinIO); often root-or-postgres owned — breaks context send if traversed
+.docker
