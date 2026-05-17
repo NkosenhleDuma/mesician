@@ -26,10 +26,14 @@ Validated in code by `chartJsonSchema` in `src/lib/chart/types.ts`.
 | Field | Description |
 | --- | --- |
 | `id` | Stable string id (e.g. `evt_…`) |
-| `t0`, `t1` | Start/end in **seconds** (float) |
+| `t0`, `t1` | Start/end in **seconds** (float). For Guitar Pro imports, times follow **playback order** (repeated passages appear multiple times at successive wall-clock positions; no “dead gap” where repeats were skipped). |
 | `kind` | `"note"` or `"chord"` |
 | `notes` | Array of `{ string: 1..6, fret: int ≥ 0, midi: int }` |
 | `tech` | Optional string tags: `hammer`, `slide`, `bend`, `mute`, etc. |
+
+## Timing semantics (GP import)
+
+Machine charts produced by ingest use AlphaTab’s playback-linear timeline (`MidiTickLookup` + `syncPoints`). Chart **`duration`** is `max(event.t1)` after sorting. **`meta.tempoMap`** is built separately via `MidiFileGenerator.generateSyncPoints` on the **full** score (multi-track); it remains suitable for UI tempo display even though per-event timing is derived from single-track MIDI generation.
 
 ## Editor round-trips
 

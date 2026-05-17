@@ -604,7 +604,7 @@ export function HighwayCanvas({
       hpPoolRef.current = [];
       badgePoolRef.current = [];
     };
-  }, [chart, height, yOnStringLine, capoFret]);
+  }, [chart, height, yOnStringLine, capoFret, timingFlashRef, timingFlashStartedMsRef]);
 
   return <div ref={hostRef} className="w-full rounded-lg overflow-hidden border border-zinc-700 min-h-[200px]" />;
 }

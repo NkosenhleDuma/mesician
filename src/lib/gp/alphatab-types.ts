@@ -1,7 +1,6 @@
 /** Narrow types for alphaTab runtime objects used in parsing (mirrors alphaTab model). */
 
 export type BeatLike = {
-  timer: number | null;
   playbackDuration: number;
   notes: NoteLike[];
   nextBeat: BeatLike | null;

@@ -27,3 +27,24 @@ docker compose --env-file .env -f docker-compose.local.yml up -d minio
 ```
 
 The prefix `mesician_` depends on your Compose project name; use the actual volume name from `docker volume ls`.
+
+---
+
+## Practice feels half-speed or highway timing looks wrong on old uploads
+
+**Symptom:** Notes drift badly relative to synth playback, or everything feels ~**2× too slow** unless you crank playback speed.
+
+**Cause:** Stored `chart.json` was generated with an ingest bug (tick→seconds used **480** ticks per quarter instead of AlphaTab’s **960**). Charts already in MinIO keep stale times until re-ingested.
+
+**What to do**
+
+1. Upgrade to a build that includes the TPQ fix in `src/lib/gp/parse.ts` (`TICKS_PER_QUARTER === 960`).
+2. **Re-upload** the Guitar Pro file for affected songs (or delete ingestion / tracks and upload again) so `machine/` and effective `source/` charts are regenerated.
+
+See [architecture.md](architecture.md) for how GP timing is derived.
+
+---
+
+## Highway gaps before repeats were fixed
+
+If an older chart showed **empty timeline space** around repeat marks while Guitar Pro playback did not: that came from using first-pass-only `beat.timer` values. Current ingest walks **`MidiTickLookup`** in playback order so repeats expand correctly. **Re-upload** the GP file to refresh stored charts.

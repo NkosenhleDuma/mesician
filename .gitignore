@@ -40,6 +40,20 @@ yarn-error.log*
 # vercel
 .vercel
 
+# terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.tfstate.lock.info
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+*.tfvars
+*.tfvars.json
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

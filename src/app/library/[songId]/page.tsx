@@ -88,7 +88,7 @@ export default async function SongPage({ params }: Props) {
                       {empty ? " · no notes" : ""}
                     </div>
                   </div>
-                  <div className={`flex flex-wrap gap-2 ${empty ? "pointer-events-none" : ""}`}>
+                  <div className="flex flex-wrap gap-2">
                     <Link
                       href={`/library/${songId}/tracks/${t.id}/edit`}
                       className="text-sm px-3 py-2 rounded-md bg-zinc-800 text-zinc-200 hover:bg-zinc-700"
@@ -97,13 +97,13 @@ export default async function SongPage({ params }: Props) {
                     </Link>
                     <Link
                       href={`/library/${songId}/tracks/${t.id}/debug`}
-                      className="text-sm px-3 py-2 rounded-md bg-violet-900/40 text-violet-200 hover:bg-violet-800/55"
+                      className={`text-sm px-3 py-2 rounded-md bg-violet-900/40 text-violet-200 hover:bg-violet-800/55 ${empty ? "pointer-events-none opacity-50" : ""}`}
                     >
                       Debug
                     </Link>
                     <Link
                       href={`/practice/${t.id}`}
-                      className="text-sm px-3 py-2 rounded-md bg-emerald-900/50 text-emerald-200 hover:bg-emerald-800/60"
+                      className={`text-sm px-3 py-2 rounded-md bg-emerald-900/50 text-emerald-200 hover:bg-emerald-800/60 ${empty ? "pointer-events-none opacity-50" : ""}`}
                     >
                       Practice
                     </Link>

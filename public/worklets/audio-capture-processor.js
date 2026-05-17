@@ -1,6 +1,7 @@
 /**
  * Mesician mic capture + spectral-flux onset detector (NOTE_RECOGNITION_V2).
  * FFT_N=2048, hop=512, ~93 hops/sec @ 48 kHz.
+ * Includes a PCM ring (~2.7s @ 48kHz) for Basic Pitch window extraction.
  */
 
 const FFT_N = 2048;
@@ -11,7 +12,8 @@ const FLUX_HIST_LEN = 96;
 const REFRACTORY_SAMPLES_DEFAULT = Math.round(48000 * 0.05);
 const MEDIAN_THRESHOLD_FACTOR = 2.35;
 const RMS_GATE_DEFAULT = 0.014;
-const RING_MASK = 16383;
+/** Mono ring depth (samples); power-of-two for fast modulo (~2.73s @ 48kHz) */
+const PCM_RING_LEN = 131072;
 
 function reverseBits(i, bits) {
   let rev = 0;
@@ -74,8 +76,9 @@ class AudioCaptureProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
     /** @type {Float32Array} */
-    this.ring = new Float32Array(RING_MASK + 1);
-    this.writeIdx = 0;
+    this.ring = new Float32Array(PCM_RING_LEN);
+    /** Monotonic samples written (may exceed ring; index with % PCM_RING_LEN) */
+    this.writeTotal = 0;
     this.samplesSinceHop = 0;
     this.hpPrevIn = 0;
     this.hpPrevOut = 0;
@@ -114,6 +117,36 @@ class AudioCaptureProcessor extends AudioWorkletProcessor {
       if (d?.type === "config") {
         if (typeof d.rmsGate === "number") this.rmsGate = d.rmsGate;
         if (typeof d.medianThresholdFactor === "number") this.medianThresholdFactor = d.medianThresholdFactor;
+        return;
+      }
+      if (d?.type === "getPcmTail") {
+        const req =
+          typeof d.samples === "number" && Number.isFinite(d.samples) ? Math.floor(d.samples) : 0;
+        const n = Math.max(0, Math.min(req, PCM_RING_LEN));
+        const out = new Float32Array(n);
+        for (let i = 0; i < n; i++) {
+          const wt = this.writeTotal - n + i;
+          if (wt < 0 || this.writeTotal === 0) {
+            out[i] = 0;
+          } else {
+            const ringIdx = ((wt % PCM_RING_LEN) + PCM_RING_LEN) % PCM_RING_LEN;
+            out[i] = this.ring[ringIdx] ?? 0;
+          }
+        }
+        const frameNow = this.currentCtxFrame();
+        const audioCtxTime =
+          typeof globalThis.currentTime === "number" ? globalThis.currentTime : frameNow / sampleRate;
+        this.port.postMessage(
+          {
+            type: "pcmTail",
+            id: d.id,
+            pcm: out,
+            writeTotal: this.writeTotal,
+            audioCtxTime,
+            sampleRate,
+          },
+          [out.buffer],
+        );
       }
     };
 
@@ -126,8 +159,12 @@ class AudioCaptureProcessor extends AudioWorkletProcessor {
 
   extractWindow(rawOut) {
     for (let i = 0; i < FFT_N; i++) {
-      const idx = (this.writeIdx - FFT_N + i + RING_MASK + 1) & RING_MASK;
-      rawOut[i] = this.ring[idx];
+      const wt = this.writeTotal - FFT_N + i;
+      if (wt < 0) {
+        rawOut[i] = 0;
+        continue;
+      }
+      rawOut[i] = this.ring[wt % PCM_RING_LEN];
     }
   }
 
@@ -161,8 +198,8 @@ class AudioCaptureProcessor extends AudioWorkletProcessor {
 
     let flux = 0;
     for (let k = 0; k < SPEC_BINS; k++) {
-      const d = magOut[k] - this.prevMag[k];
-      if (d > 0) flux += d;
+      const dMag = magOut[k] - this.prevMag[k];
+      if (dMag > 0) flux += dMag;
     }
     this.prevMag.set(magOut);
     return { flux, rms };
@@ -238,12 +275,13 @@ class AudioCaptureProcessor extends AudioWorkletProcessor {
       const waveSnippet = new Float32Array(FFT_N);
       waveSnippet.set(rawWin);
 
-      const ctxTime = frameNow / sampleRate;
+      const audioCtxTime =
+        typeof globalThis.currentTime === "number" ? globalThis.currentTime : frameNow / sampleRate;
 
       this.port.postMessage(
         {
           type: "onset",
-          audioContextTime: ctxTime,
+          audioContextTime: audioCtxTime,
           currentFrame: frameNow,
           sampleRate,
           rms,
@@ -251,6 +289,7 @@ class AudioCaptureProcessor extends AudioWorkletProcessor {
           fluxThreshold: thresh,
           spectrum: aggMag,
           waveSnippet,
+          writeTotal: this.writeTotal,
         },
         [aggMag.buffer, waveSnippet.buffer],
       );
@@ -270,8 +309,9 @@ class AudioCaptureProcessor extends AudioWorkletProcessor {
       this.hpPrevIn = x;
       this.hpPrevOut = y;
 
-      this.ring[this.writeIdx] = y;
-      this.writeIdx = (this.writeIdx + 1) & RING_MASK;
+      const idx = this.writeTotal % PCM_RING_LEN;
+      this.ring[idx] = y;
+      this.writeTotal++;
 
       this.samplesSinceHop++;
       if (this.samplesSinceHop >= HOP) {

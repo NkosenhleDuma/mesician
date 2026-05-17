@@ -132,10 +132,10 @@ For each track:
 - tuning + string count (assume 6 strings unless GP says otherwise; MVP still renders 6 lanes)
 - tempo map + time signatures
 - note events with:
-  - string, fret, midi, start time, duration
+  - string, fret, midi, start time, duration (seconds; **playback-linear**: repeats/volta/jumps expanded like MIDI playback)
   - techniques when available from GP
 
-**Implementation note:** agent selects a GP parser library (JS/TS) that supports gp5/gpx. If none are robust, implement a minimal parser sufficient for timing+notes+techniques for these formats.
+**Implementation note:** Mesician uses [@coderline/alphatab](https://www.alphatab.net/) (`ScoreLoader` + `MidiFileGenerator`). Event times come from **`MidiTickLookup`** after generation (not linear score order / first-pass beat timers). Tick→seconds conversion must use AlphaTab’s **960 ticks per quarter** (`MidiUtils.QuarterTime`), aligned with **`MidiFileGenerator.syncPoints`** from the same generate pass.
 
 ---
 

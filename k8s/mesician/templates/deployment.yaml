@@ -1,0 +1,101 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mesician
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mesician
+  template:
+    metadata:
+      labels:
+        app: mesician
+    spec:
+      imagePullSecrets:
+        - name: ghcr-pull
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: mesician
+          image: {{ .Values.mesician.image.repository }}:{{ .Values.mesician.image.tag }}
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+          env:
+            - name: S3_REGION
+              value: {{ .Values.mesician.s3Region | quote }}
+            - name: S3_BUCKET
+              value: {{ .Values.mesician.s3Bucket | quote }}
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.mesician.existingSecret }}
+                  key: DATABASE_URL
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.mesician.existingSecret }}
+                  key: JWT_SECRET
+            - name: S3_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.mesician.existingSecret }}
+                  key: S3_ENDPOINT
+            - name: S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.mesician.existingSecret }}
+                  key: S3_ACCESS_KEY
+            - name: S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.mesician.existingSecret }}
+                  key: S3_SECRET_KEY
+            - name: NEXT_PUBLIC_APP_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.mesician.existingSecret }}
+                  key: NEXT_PUBLIC_APP_URL
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mesician-cloudflared
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mesician-cloudflared
+  template:
+    metadata:
+      labels:
+        app: mesician-cloudflared
+    spec:
+      {{- with .Values.cloudflared.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: cloudflared
+          image: {{ .Values.cloudflared.image.repository }}:{{ .Values.cloudflared.image.tag }}
+          command:
+            - cloudflared
+            - tunnel
+            - --no-autoupdate
+            - run
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: TUNNEL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: mesician-cloudflared-secret
+                  key: tunnel-token
+            - name: TUNNEL_URL
+              value: {{ .Values.cloudflared.tunnelBackendUrl | quote }}

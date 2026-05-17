@@ -22,11 +22,7 @@ import {
   getStoredPlaybackVolume,
   getStoredPracticeMode,
   setStoredDebugCapture,
-  setStoredEmulateDelayMs,
-  setStoredEmulateJitterMs,
-  setStoredLatencyMs,
   setStoredPlayAlongEnabled,
-  setStoredPlayAlongSource,
   type PlayAlongSource,
   type PracticeMode,
 } from "@/lib/calibration/storage";
@@ -39,6 +35,7 @@ import {
 } from "@/lib/scoring/engine";
 import {
   DebugCapture,
+  type BpTraceSnapshot,
   type DebugReportFlushReason,
   type ExpectedEventSnapshot,
   type MonoTraceSnapshot,
@@ -47,6 +44,7 @@ import {
 import {
   inferPlayedStringFret,
   scoreOnsetAgainstEvent,
+  scoreBpOnsetAgainstEvent,
   classifyOnsetDebugOutcome,
   type MonoRecognizerTrace,
   type PolyRecognizerTrace,
@@ -58,6 +56,9 @@ import { HighwayCanvas, type TimingFlashPayload } from "./HighwayCanvas";
 import { MobilePlayShell } from "./MobilePlayShell";
 import { PracticeControls, type ScoreSnap, type WrongNoteFlash } from "./PracticeControls";
 import { PracticeIntro } from "./PracticeIntro";
+import type { DetectionMetricsSnapshot } from "@/lib/detection/pitch-detection-metrics";
+import { BasicPitchDetector } from "@/lib/detection/basic-pitch-detector";
+import { loadPitchDetectionConfig } from "@/config/pitchDetection.config";
 import { useScreenWakeLock } from "@/lib/hooks/use-screen-wake-lock";
 
 const EMULATE_LOOKAHEAD_SEC = 2;
@@ -173,7 +174,17 @@ function snapshotChartEvent(ev: ChartEvent): ExpectedEventSnapshot {
   };
 }
 
-function buildTraceSnapshots(r: ScoreOnsetAgainstEventResult): MonoTraceSnapshot | PolyTraceSnapshot | null {
+function buildTraceSnapshots(
+  r: ScoreOnsetAgainstEventResult,
+): MonoTraceSnapshot | PolyTraceSnapshot | BpTraceSnapshot | null {
+  if (r.trace.kind === "bp") {
+    const t = r.trace;
+    return {
+      kind: "bp",
+      evidenceMidis: [...t.evidenceMidis],
+      dominantMidi: t.dominantMidi,
+    };
+  }
   if (r.isPoly) {
     const t = r.trace as PolyRecognizerTrace;
     return {
@@ -246,9 +257,11 @@ export function PracticeClient({ chart, songId, trackId, songTitle, trackName }:
   const debugCaptureEnabledRef = useRef(false);
   const flushDebugToApiRef = useRef<
     (reason: DebugReportFlushReason) => Promise<{ ok: boolean; key?: string; error?: string }>
-  >((_reason) => Promise.resolve({ ok: false, error: "not-ready" }));
+  >(() => Promise.resolve({ ok: false, error: "not-ready" }));
   /** For chart unmount / `pagehide` — wired to `flushDebugCaptureKeepalive` */
   const flushDebugKeepaliveRef = useRef<((reason: DebugReportFlushReason) => void) | null>(null);
+  const basicPitchDetectorRef = useRef<BasicPitchDetector | null>(null);
+  const pitchDiagRef = useRef<DetectionMetricsSnapshot | null>(null);
   const [tick, setTick] = useState(0);
   const [latencyMs, setLatencyMs] = useState(getStoredLatencyMs);
   const [playAlong, setPlayAlong] = useState(getStoredPlayAlongEnabled);
@@ -296,6 +309,13 @@ export function PracticeClient({ chart, songId, trackId, songTitle, trackName }:
   debugCaptureEnabledRef.current = debugCaptureEnabled;
   const forceTick = useCallback(() => {
     setTick((value) => value + 1);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      basicPitchDetectorRef.current?.dispose();
+      basicPitchDetectorRef.current = null;
+    };
   }, []);
 
   const syncScoreUi = useCallback(() => {
@@ -803,6 +823,7 @@ export function PracticeClient({ chart, songId, trackId, songTitle, trackName }:
           spectrum: [],
           waveSnippet: [],
           detectedMidiGlob: null,
+          ...(pitchDiagRef.current != null ? { pitchTelemetry: pitchDiagRef.current } : {}),
         });
       }
 
@@ -840,6 +861,8 @@ export function PracticeClient({ chart, songId, trackId, songTitle, trackName }:
     };
 
     const disposeCapture = () => {
+      basicPitchDetectorRef.current?.attachCapture(null);
+      basicPitchDetectorRef.current?.stop();
       capture?.disconnect();
       capture = null;
     };
@@ -896,19 +919,28 @@ export function PracticeClient({ chart, songId, trackId, songTitle, trackName }:
               spectrum: specNums,
               waveSnippet: waveNums,
               detectedMidiGlob: null,
+              ...(pitchDiagRef.current != null ? { pitchTelemetry: pitchDiagRef.current } : {}),
             });
           }
           return;
         }
 
-        const r = scoreOnsetAgainstEvent(
-          best.ev,
-          songTime,
-          payload.waveSnippet,
-          payload.spectrum,
-          payload.sampleRate,
-          latencyMs,
-        );
+        const pdCfg = loadPitchDetectionConfig();
+        const onsetCtxMs = payload.audioContextTime * 1000;
+        const evidence =
+          basicPitchDetectorRef.current?.midisEvidenceAt(onsetCtxMs) ?? new Set<number>();
+        const useFallback = evidence.size === 0 && pdCfg.fallbackHarmonicVerifier;
+
+        const r = useFallback
+          ? scoreOnsetAgainstEvent(
+              best.ev,
+              songTime,
+              payload.waveSnippet,
+              payload.spectrum,
+              payload.sampleRate,
+              latencyMs,
+            )
+          : scoreBpOnsetAgainstEvent(best.ev, songTime, evidence, latencyMs);
 
         let appliedPitchHit = false;
         for (const nh of r.notes) {
@@ -946,6 +978,7 @@ export function PracticeClient({ chart, songId, trackId, songTitle, trackName }:
             spectrum: specNums,
             waveSnippet: waveNums,
             detectedMidiGlob: r.detectedMidi,
+            ...(pitchDiagRef.current != null ? { pitchTelemetry: pitchDiagRef.current } : {}),
           });
         }
 
@@ -961,6 +994,18 @@ export function PracticeClient({ chart, songId, trackId, songTitle, trackName }:
 
       try {
         await capture.connect(stream);
+        if (!cancelled) {
+          const det = basicPitchDetectorRef.current ?? new BasicPitchDetector(ctx);
+          basicPitchDetectorRef.current = det;
+          det.attachCapture(capture);
+          det.onMetrics = (snap) => {
+            pitchDiagRef.current = snap;
+          };
+          await det.init().catch(() => {
+            /* model load failure — fall back entirely to harmonic path */
+          });
+          det.start();
+        }
         setPlayAlongError(null);
       } catch (err) {
         if (!cancelled) setPlayAlongError(describeMicError(err));

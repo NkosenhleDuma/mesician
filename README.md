@@ -92,7 +92,7 @@ The app image entrypoint ([`docker-entrypoint.sh`](docker-entrypoint.sh)) runs `
 | `src/lib/db/` | Drizzle schema and DB client |
 | `migrations/` | Kysely migration files |
 | `scripts/migrate.ts` | Migration CLI |
-| `src/lib/gp/` | Guitar Pro → internal chart |
+| `src/lib/gp/` | Guitar Pro → internal chart ([timing details](docs/architecture.md)) |
 | `src/lib/chart/` | `chart.json` types, difficulty classification, merge |
 | `src/lib/audio/` | Web Audio transport + simple synth scheduling |
 | `src/lib/scoring/` | Onset-driven mic scoring (worklet FFT + YIN / harmonic verify) |

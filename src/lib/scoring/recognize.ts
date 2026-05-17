@@ -25,6 +25,19 @@ export const YIN_CMNDF_MAX = 0.2;
 
 const HARM_WEIGHTS = [1.0, 0.6, 0.4, 0.25] as const;
 
+function midiMatchesEvidence(expectedMidi: number, evidence: Set<number>, semiTolerance = 0.55): boolean {
+  if (evidence.has(expectedMidi)) return true;
+  for (const e of evidence) {
+    if (Math.abs(e - expectedMidi) <= semiTolerance) return true;
+  }
+  return false;
+}
+
+export function dominantMidiFromEvidence(evidence: Set<number>): number | null {
+  if (evidence.size === 0) return null;
+  return [...evidence].sort((a, b) => a - b)[Math.floor(evidence.size / 2)]!;
+}
+
 /** Optional overrides for replay / tuning UI; omitted fields use production defaults. */
 export type OnsetRecognizerTuning = {
   timingWindows?: VerdictWindowsOverride;
@@ -69,6 +82,7 @@ export function recognizePolyNotes(
 }
 
 export type PolyRecognizerTrace = {
+  kind: "poly";
   normEnergy: number;
   supportThreshold: number;
   perNote: Array<{
@@ -120,11 +134,12 @@ export function recognizePolyNotesWithTrace(
 
   return {
     notes,
-    trace: { normEnergy: norm, supportThreshold, perNote },
+    trace: { kind: "poly", normEnergy: norm, supportThreshold, perNote },
   };
 }
 
 export type MonoRecognizerTrace = {
+  kind: "mono";
   yinHz: number | null;
   cmndfMin: number | null;
   centsPerNote: Array<{
@@ -193,6 +208,7 @@ export function recognizeMonoNotes(
   });
 
   const trace: MonoRecognizerTrace = {
+    kind: "mono",
     yinHz: detectedHz,
     cmndfMin: y?.cmndfMin ?? null,
     centsPerNote,
@@ -201,9 +217,15 @@ export function recognizeMonoNotes(
   return { notes, detectedMidi, detectedHz, trace };
 }
 
+export type BpRecognizerTrace = {
+  kind: "bp";
+  evidenceMidis: number[];
+  dominantMidi: number | null;
+};
+
 /** Result of scoring an onset against one chart event, including tuner/debug traces */
 export type ScoreOnsetAgainstEventResult = ScoreEventResult & {
-  trace: MonoRecognizerTrace | PolyRecognizerTrace;
+  trace: MonoRecognizerTrace | PolyRecognizerTrace | BpRecognizerTrace;
   isPoly: boolean;
 };
 
@@ -254,6 +276,56 @@ export function scoreOnsetAgainstEvent(
     notes: mono.notes,
     trace: mono.trace,
     isPoly: false,
+  };
+}
+
+/** Score timing from transport + spectral onset; pitches from stabilized Basic Pitch evidence. */
+export function scoreBpOnsetAgainstEvent(
+  ev: ChartEvent,
+  songTimeSec: number,
+  evidenceMidis: Set<number>,
+  inputLatencyMs: number,
+  tuning?: Pick<OnsetRecognizerTuning, "timingWindows">,
+): ScoreOnsetAgainstEventResult {
+  const tMs = songTimeSec * 1000;
+  const centerMs = ev.t0 * 1000;
+  const timingErrorMs = tMs + inputLatencyMs - centerMs;
+  const verdict = classifyTiming(timingErrorMs, tuning?.timingWindows);
+
+  const notes = ev.notes.map((n) => {
+    if (n.dead) {
+      return {
+        string: n.string,
+        expectedMidi: n.midi,
+        pitchOk: true,
+        verdict,
+        timingErrorMs,
+      };
+    }
+    const pitchOk = midiMatchesEvidence(n.midi, evidenceMidis);
+    return {
+      string: n.string,
+      expectedMidi: n.midi,
+      pitchOk,
+      verdict,
+      timingErrorMs,
+    };
+  });
+
+  const dom = dominantMidiFromEvidence(evidenceMidis);
+  const hz = dom != null ? midiToFreq(dom) : null;
+
+  return {
+    eventId: ev.id,
+    detectedMidi: dom,
+    detectedHz: hz,
+    notes,
+    trace: {
+      kind: "bp",
+      evidenceMidis: [...evidenceMidis].sort((a, b) => a - b),
+      dominantMidi: dom,
+    },
+    isPoly: ev.notes.filter((n) => !n.dead).length > 1,
   };
 }
 

@@ -1,0 +1,53 @@
+mesician:
+  image:
+    repository: ghcr.io/nkosenhleduma/mesician
+    tag: latest
+  # Create before install: kubectl create secret generic mesician-app-env -n mesician --from-env-file=.env.production
+  # Mesician and in-cluster MinIO both read this Secret: MinIO maps S3_ACCESS_KEY / S3_SECRET_KEY to root credentials.
+  # Required secret keys: DATABASE_URL, JWT_SECRET, S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY, NEXT_PUBLIC_APP_URL
+  # S3_REGION and S3_BUCKET are set from values below. With bundled MinIO, use:
+  #   S3_ENDPOINT=http://mesician-minio:9000 (same-namespace DNS)
+  # The same secret keys S3_ACCESS_KEY / S3_SECRET_KEY are used as MinIO root user + password
+  # (values under minio.rootUserFromSecretKey / minio.rootPasswordFromSecretKey).
+  # Ensure they meet MinIO's length and character requirements for console + S3 API access.
+  existingSecret: mesician-app-env
+  s3Region: us-east-1
+  s3Bucket: mesician
+
+db:
+  image:
+    repository: postgres
+    tag: 16-alpine
+  database: mesician
+  username: mesician
+  # kubectl create secret generic mesician-postgres-secret -n mesician --from-literal=postgres-password='mesician'
+  existingSecret: mesician-postgres-secret
+  passwordKey: postgres-password
+
+persistence:
+  postgres:
+    claimName: mesician-postgres-nfs-pvc
+  minio:
+    claimName: mesician-minio-nfs-pvc
+    storageSize: 64Gi
+
+minio:
+  image:
+    repository: minio/minio
+    tag: latest
+  # Kubernetes secret key names inside mesician.existingSecret mapped to MINIO_ROOT_*.
+  rootUserFromSecretKey: S3_ACCESS_KEY
+  rootPasswordFromSecretKey: S3_SECRET_KEY
+
+nodeSelector:
+  pi-role: "worker-0"
+
+cloudflared:
+  image:
+    repository: cloudflare/cloudflared
+    tag: latest
+  existingSecret: mesician-cloudflared-secret
+  tunnelTokenKey: tunnel-token
+  tunnelBackendUrl: http://mesician
+  nodeSelector:
+    pi-role: "worker"

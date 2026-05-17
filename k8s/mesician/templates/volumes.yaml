@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Values.persistence.postgres.claimName }}
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    nfs.io/storage-path: "mesician/postgres"
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: nfs-client
+  resources:
+    requests:
+      storage: 128Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Values.persistence.minio.claimName }}
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    nfs.io/storage-path: "mesician/minio"
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: nfs-client
+  resources:
+    requests:
+      storage: {{ .Values.persistence.minio.storageSize }}

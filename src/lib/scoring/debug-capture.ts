@@ -1,4 +1,5 @@
 import type { Verdict } from "./engine";
+import type { DetectionMetricsSnapshot } from "@/lib/detection/pitch-detection-metrics";
 
 /** Version for analysis scripts parsing MinIO blobs. */
 export const DEBUG_REPORT_VERSION = 1;
@@ -23,6 +24,12 @@ export type ExpectedEventSnapshot = {
 export type CandidateSnapshot = {
   eventId: string;
   deltaSec: number;
+};
+
+export type BpTraceSnapshot = {
+  kind: "bp";
+  evidenceMidis: number[];
+  dominantMidi: number | null;
 };
 
 export type MonoTraceSnapshot = {
@@ -68,13 +75,15 @@ export type DebugDecision = {
 
   candidates: CandidateSnapshot[];
 
-  trace: MonoTraceSnapshot | PolyTraceSnapshot | null;
+  trace: MonoTraceSnapshot | PolyTraceSnapshot | BpTraceSnapshot | null;
 
   /** Matches RECOGNITION_FFT_SIZE / 2 + 1 spectral magnitudes after strum aggregation */
   spectrum: number[];
   waveSnippet: number[];
 
   detectedMidiGlob: number | null;
+
+  pitchTelemetry?: DetectionMetricsSnapshot | null;
 };
 
 export type DebugReportMeta = {
