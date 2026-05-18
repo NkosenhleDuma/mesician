@@ -25,7 +25,11 @@ export const YIN_CMNDF_MAX = 0.2;
 
 const HARM_WEIGHTS = [1.0, 0.6, 0.4, 0.25] as const;
 
-function midiMatchesEvidence(expectedMidi: number, evidence: Set<number>, semiTolerance = 0.55): boolean {
+export function midiMatchesEvidence(
+  expectedMidi: number,
+  evidence: Set<number>,
+  semiTolerance = 0.55,
+): boolean {
   if (evidence.has(expectedMidi)) return true;
   for (const e of evidence) {
     if (Math.abs(e - expectedMidi) <= semiTolerance) return true;
@@ -36,6 +40,18 @@ function midiMatchesEvidence(expectedMidi: number, evidence: Set<number>, semiTo
 export function dominantMidiFromEvidence(evidence: Set<number>): number | null {
   if (evidence.size === 0) return null;
   return [...evidence].sort((a, b) => a - b)[Math.floor(evidence.size / 2)]!;
+}
+
+/** True if `evidenceMidi` matches any expected chart MIDI within semitone tolerance. */
+export function evidenceMidiMatchesExpected(
+  evidenceMidi: number,
+  expectedMidis: readonly number[],
+  semiTolerance = 0.55,
+): boolean {
+  for (const ex of expectedMidis) {
+    if (Math.abs(evidenceMidi - ex) <= semiTolerance) return true;
+  }
+  return false;
 }
 
 /** Optional overrides for replay / tuning UI; omitted fields use production defaults. */

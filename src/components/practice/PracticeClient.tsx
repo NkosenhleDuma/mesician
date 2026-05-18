@@ -14,6 +14,7 @@ import {
 } from "@/lib/audio/transport";
 import {
   getStoredDebugCapture,
+  getStoredDebugSessionRecord,
   getStoredEmulateDelayMs,
   getStoredEmulateJitterMs,
   getStoredLatencyMs,
@@ -22,6 +23,7 @@ import {
   getStoredPlaybackVolume,
   getStoredPracticeMode,
   setStoredDebugCapture,
+  setStoredDebugSessionRecord,
   setStoredPlayAlongEnabled,
   type PlayAlongSource,
   type PracticeMode,
@@ -50,7 +52,7 @@ import {
   type PolyRecognizerTrace,
   type ScoreOnsetAgainstEventResult,
 } from "@/lib/scoring/recognize";
-import { AudioCaptureWorklet } from "@/lib/audio/audio-capture-worklet";
+import { AudioCaptureWorklet, type OnsetPayload } from "@/lib/audio/audio-capture-worklet";
 import { clampSpeed } from "./practice-constants";
 import { HighwayCanvas, type TimingFlashPayload } from "./HighwayCanvas";
 import { MobilePlayShell } from "./MobilePlayShell";
@@ -66,6 +68,17 @@ const MOBILE_MAX_W_PX = 767;
 /** Align with default RMS gate in `public/worklets/audio-capture-processor.js` */
 const MIC_RMS_GATE_HINT = 0.014;
 const WRONG_NOTE_FLASH_MS = 200;
+
+function pickMediaRecorderMime(): string {
+  if (typeof MediaRecorder === "undefined") return "audio/webm";
+  if (MediaRecorder.isTypeSupported("audio/webm;codecs=opus")) return "audio/webm;codecs=opus";
+  if (MediaRecorder.isTypeSupported("audio/webm")) return "audio/webm";
+  return "audio/webm";
+}
+
+function livePlayAlongInput(src: PlayAlongSource): boolean {
+  return src === "mic" || src === "file";
+}
 
 const MIC_UNAVAILABLE_MSG =
   "Mic unavailable. Check microphone permissions or use Emulate source.";
@@ -299,6 +312,16 @@ export function PracticeClient({ chart, songId, trackId, songTitle, trackName }:
   const [debugReportBusy, setDebugReportBusy] = useState(false);
   const [debugReportMsg, setDebugReportMsg] = useState<string | null>(null);
   const [debugUploadedKey, setDebugUploadedKey] = useState<string | null>(null);
+  const debugSessionRecordRef = useRef(getStoredDebugSessionRecord());
+  const [debugSessionRecord, setDebugSessionRecord] = useState(getStoredDebugSessionRecord);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordChunksRef = useRef<BlobPart[]>([]);
+  const lastRecorderMimeRef = useRef("audio/webm");
+
+  const fileInputAudioRef = useRef<HTMLAudioElement | null>(null);
+  const fileMediaElementSourceRef = useRef<MediaElementAudioSourceNode | null>(null);
+  const debugFileUrlRef = useRef<string | null>(null);
+  const [debugInputFileName, setDebugInputFileName] = useState<string | null>(null);
   const playbackVolumeRef = useRef(playbackVolume);
   playbackVolumeRef.current = playbackVolume;
   const playAlongRef = useRef(playAlong);
@@ -367,6 +390,16 @@ export function PracticeClient({ chart, songId, trackId, songTitle, trackName }:
       emulateOffsetsRef.current.clear();
       setWrongNoteFlash(null);
       window.clearTimeout(wrongFlashTimerRef.current);
+      const rec = mediaRecorderRef.current;
+      mediaRecorderRef.current = null;
+      if (rec && rec.state !== "inactive") {
+        try {
+          rec.stop();
+        } catch {
+          /* ignore */
+        }
+      }
+      recordChunksRef.current = [];
       debugCaptureRef.current.clear();
       debugMissLoggedRef.current.clear();
       scoreStateRef.current = { total: 0, multiplier: 1, combo: 0 };
@@ -437,6 +470,64 @@ export function PracticeClient({ chart, songId, trackId, songTitle, trackName }:
     }
   }, [requestMicStream]);
 
+  const stopSessionRecordingSegment = useCallback(async () => {
+    const rec = mediaRecorderRef.current;
+    mediaRecorderRef.current = null;
+    if (!rec || rec.state === "inactive") return;
+    await new Promise<void>((resolve) => {
+      rec.onstop = () => resolve();
+      rec.stop();
+    });
+  }, []);
+
+  const startSessionRecording = useCallback((stream: MediaStream) => {
+    if (!debugSessionRecordRef.current || sourceRef.current !== "mic") return;
+    if (mediaRecorderRef.current?.state === "recording") return;
+    if (!stream.getAudioTracks().length) return;
+    const mime = pickMediaRecorderMime();
+    lastRecorderMimeRef.current = mime || "audio/webm";
+    try {
+      const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+      rec.ondataavailable = (e) => {
+        if (e.data.size > 0) recordChunksRef.current.push(e.data);
+      };
+      rec.start(400);
+      mediaRecorderRef.current = rec;
+    } catch {
+      mediaRecorderRef.current = null;
+    }
+  }, []);
+
+  const persistDebugSessionRecord = useCallback((enabled: boolean) => {
+    setDebugSessionRecord(enabled);
+    setStoredDebugSessionRecord(enabled);
+    debugSessionRecordRef.current = enabled;
+  }, []);
+
+  const onDebugFileChange = useCallback((file: File | null) => {
+    if (debugFileUrlRef.current) {
+      URL.revokeObjectURL(debugFileUrlRef.current);
+      debugFileUrlRef.current = null;
+    }
+    const el = fileInputAudioRef.current;
+    if (!file) {
+      setDebugInputFileName(null);
+      if (el) {
+        el.pause();
+        el.removeAttribute("src");
+      }
+      return;
+    }
+    const url = URL.createObjectURL(file);
+    debugFileUrlRef.current = url;
+    setDebugInputFileName(file.name);
+    if (el) {
+      el.pause();
+      el.src = url;
+      void el.load();
+    }
+  }, []);
+
   const commitPlaybackRate = useCallback(
     (r: number) => {
       const next = clampSpeed(r);
@@ -481,7 +572,7 @@ export function PracticeClient({ chart, songId, trackId, songTitle, trackName }:
       if (
         playAlongRef.current &&
         debugCaptureEnabledRef.current &&
-        sourceRef.current === "mic" &&
+        livePlayAlongInput(sourceRef.current) &&
         debugCaptureRef.current.length > 0
       ) {
         const flushDbg = flushDebugToApiRef.current;
@@ -491,6 +582,9 @@ export function PracticeClient({ chart, songId, trackId, songTitle, trackName }:
         });
       }
       pause(tr);
+      if (sourceRef.current === "mic") {
+        void stopSessionRecordingSegment();
+      }
       forceTick();
       return;
     }
@@ -500,23 +594,31 @@ export function PracticeClient({ chart, songId, trackId, songTitle, trackName }:
       .then(() => {
         if (
           playAlongRef.current &&
-          sourceRef.current === "mic" &&
+          livePlayAlongInput(sourceRef.current) &&
           practiceModeRef.current === "perform"
         ) {
           runStartedAtRef.current = Date.now();
+        }
+        if (sourceRef.current === "mic") {
+          const s = micStreamRef.current;
+          if (s) startSessionRecording(s);
         }
       })
       .finally(() => {
         setAudioBusy(false);
         forceTick();
       });
-  }, [audioBusy, chart, forceTick]);
+  }, [audioBusy, chart, forceTick, startSessionRecording, stopSessionRecordingSegment]);
 
   const onSeek = useCallback(
     (t: number, currentTime: number) => {
       if (t < currentTime) clearPlayAlongState();
       const tr = transportRef.current;
       if (tr) seek(tr, t);
+      if (sourceRef.current === "file") {
+        const el = fileInputAudioRef.current;
+        if (el) el.currentTime = Math.max(0, t);
+      }
       forceTick();
     },
     [clearPlayAlongState, forceTick],
@@ -544,6 +646,7 @@ export function PracticeClient({ chart, songId, trackId, songTitle, trackName }:
     void resolveGuitarInstrument(t);
     return () => {
       flushDebugKeepaliveRef.current?.("exit");
+      fileMediaElementSourceRef.current = null;
       t.guitar?.disconnect();
       void t.ctx.close();
       transportRef.current = null;
@@ -632,7 +735,8 @@ export function PracticeClient({ chart, songId, trackId, songTitle, trackName }:
 
   const flushDebugCaptureKeepalive = useCallback((reason: DebugReportFlushReason) => {
     const cap = debugCaptureRef.current;
-    if (!debugCaptureEnabledRef.current || sourceRef.current !== "mic" || cap.length === 0) return;
+    if (!debugCaptureEnabledRef.current || !livePlayAlongInput(sourceRef.current) || cap.length === 0)
+      return;
 
     const runIso =
       runStartedAtRef.current != null
@@ -673,8 +777,19 @@ export function PracticeClient({ chart, songId, trackId, songTitle, trackName }:
   const flushDebugCaptureToApi = useCallback(
     async (reason: DebugReportFlushReason): Promise<{ ok: boolean; key?: string; error?: string }> => {
       const cap = debugCaptureRef.current;
-      if (!debugCaptureEnabledRef.current || sourceRef.current !== "mic" || cap.length === 0) {
+      if (!debugCaptureEnabledRef.current || !livePlayAlongInput(sourceRef.current) || cap.length === 0) {
         return { ok: false, error: "No debug data to send" };
+      }
+
+      let audioBlob: Blob | null = null;
+      if (sourceRef.current === "mic" && debugSessionRecordRef.current) {
+        await stopSessionRecordingSegment();
+        const parts = recordChunksRef.current;
+        if (parts.length > 0) {
+          const blob = new Blob(parts, { type: lastRecorderMimeRef.current });
+          audioBlob = blob.size > 0 ? blob : null;
+        }
+        recordChunksRef.current = [];
       }
 
       const runIso =
@@ -707,9 +822,17 @@ export function PracticeClient({ chart, songId, trackId, songTitle, trackName }:
       }
       const data = (await res.json().catch(() => ({}))) as { key?: string };
       cap.clear();
+      if (audioBlob && data.key) {
+        const mime = audioBlob.type || lastRecorderMimeRef.current;
+        await fetch(`/api/debug/session-audio?jsonKey=${encodeURIComponent(data.key)}`, {
+          method: "POST",
+          headers: { "Content-Type": mime },
+          body: audioBlob,
+        });
+      }
       return { ok: true, key: data.key };
     },
-    [songId, trackId, latencyMs, chart.meta.tuning, chart.meta.capoFret],
+    [songId, trackId, latencyMs, chart.meta.tuning, chart.meta.capoFret, stopSessionRecordingSegment],
   );
 
   flushDebugKeepaliveRef.current = flushDebugCaptureKeepalive;
@@ -755,7 +878,7 @@ export function PracticeClient({ chart, songId, trackId, songTitle, trackName }:
       if (res.ok) {
         setBestScore((b) => Math.max(b, scoreStateRef.current.total));
         if (
-          src === "mic" &&
+          (src === "mic" || src === "file") &&
           debugCaptureEnabledRef.current &&
           debugCaptureRef.current.length > 0
         ) {
@@ -770,7 +893,7 @@ export function PracticeClient({ chart, songId, trackId, songTitle, trackName }:
   );
 
   useEffect(() => {
-    if (!playAlong || source !== "mic" || practiceMode !== "perform") return;
+    if (!playAlong || !livePlayAlongInput(source) || practiceMode !== "perform") return;
     const tr = transportRef.current;
     if (!tr?.playing) return;
     const dur = chart.duration || 0;
@@ -779,7 +902,7 @@ export function PracticeClient({ chart, songId, trackId, songTitle, trackName }:
     if (savedRunRef.current) return;
     savedRunRef.current = true;
     setSaveBusy(true);
-    void postSaveRun("mic").finally(() => {
+    void postSaveRun(source).finally(() => {
       setSaveBusy(false);
       forceTick();
     });
@@ -791,7 +914,7 @@ export function PracticeClient({ chart, songId, trackId, songTitle, trackName }:
     if (!tr?.playing) return;
     const adjustedSongTime = getSongTime(tr) + latencyMs / 1000;
     const winSec = VERDICT_WINDOWS_MS.off / 1000;
-    const dbgOn = debugCaptureEnabledRef.current && source === "mic";
+    const dbgOn = debugCaptureEnabledRef.current && livePlayAlongInput(source);
 
     for (const ev of chart.events) {
       const anyPendingLate = ev.notes.some((n) => {
@@ -837,7 +960,7 @@ export function PracticeClient({ chart, songId, trackId, songTitle, trackName }:
   }, [tick, playAlong, chart, latencyMs, applyVerdictForString, source]);
 
   useEffect(() => {
-    if (!playAlong || source !== "mic") return;
+    if (!playAlong || !livePlayAlongInput(source)) return;
     const tr = transportRef.current;
     if (!tr) return;
     let cancelled = false;
@@ -867,131 +990,142 @@ export function PracticeClient({ chart, songId, trackId, songTitle, trackName }:
       capture = null;
     };
 
+    const onCapturePayload = (payload: OnsetPayload) => {
+      if (cancelled) return;
+      const tr2 = transportRef.current;
+      if (!tr2?.playing) return;
+
+      const songTime = audioCtxTimeToSongSec(tr2, payload.audioContextTime);
+      debugAudioSampleRateRef.current = payload.sampleRate;
+      const dbgOn = debugCaptureEnabledRef.current && livePlayAlongInput(sourceRef.current);
+      const flux = typeof payload.flux === "number" ? payload.flux : null;
+      const fluxThreshold = typeof payload.fluxThreshold === "number" ? payload.fluxThreshold : null;
+      const specNums = dbgOn ? DebugCapture.copySpectrum(payload.spectrum) : [];
+      const waveNums = dbgOn ? DebugCapture.copyWaveSnippet(payload.waveSnippet) : [];
+
+      const cands: { ev: ChartEvent; d: number }[] = [];
+      for (const ev of chart.events) {
+        if (!eventHasPendingString(ev, verdictsRef.current)) continue;
+        const d = Math.abs(ev.t0 - songTime);
+        if (d > winSec) continue;
+        cands.push({ ev, d });
+      }
+      cands.sort((a, b) => a.d - b.d);
+
+      const candSnap = cands.slice(0, 2).map((c) => ({
+        eventId: c.ev.id,
+        deltaSec: c.d,
+      }));
+
+      const best = cands[0] ?? null;
+      if (!best) {
+        if (dbgOn) {
+          debugCaptureRef.current.push({
+            songTimeSec: songTime,
+            audioContextTime: payload.audioContextTime,
+            outcome: "unmatched-onset",
+            latencyMsSetting: latencyMs,
+            verdict: null,
+            timingErrorMs: null,
+            expectedEvent: null,
+            isPoly: null,
+            rms: payload.rms,
+            flux,
+            fluxThreshold,
+            candidates: candSnap,
+            trace: null,
+            spectrum: specNums,
+            waveSnippet: waveNums,
+            detectedMidiGlob: null,
+            ...(pitchDiagRef.current != null ? { pitchTelemetry: pitchDiagRef.current } : {}),
+          });
+        }
+        return;
+      }
+
+      const pdCfg = loadPitchDetectionConfig();
+      const onsetCtxMs = payload.audioContextTime * 1000;
+      const tEv0 = typeof performance !== "undefined" ? performance.now() : 0;
+      const evidence =
+        basicPitchDetectorRef.current?.midisEvidenceAt(onsetCtxMs) ?? new Set<number>();
+      const tEv1 = typeof performance !== "undefined" ? performance.now() : 0;
+      const useFallback = evidence.size === 0 && pdCfg.fallbackHarmonicVerifier;
+
+      const tSc0 = typeof performance !== "undefined" ? performance.now() : 0;
+      const r = useFallback
+        ? scoreOnsetAgainstEvent(
+            best.ev,
+            songTime,
+            payload.waveSnippet,
+            payload.spectrum,
+            payload.sampleRate,
+            latencyMs,
+          )
+        : scoreBpOnsetAgainstEvent(best.ev, songTime, evidence, latencyMs);
+      const tSc1 = typeof performance !== "undefined" ? performance.now() : 0;
+
+      let appliedPitchHit = false;
+      for (const nh of r.notes) {
+        if (nh.pitchOk && nh.verdict !== "miss") {
+          const ok = applyVerdictForString(best.ev.id, nh.string, nh.verdict, nh.timingErrorMs);
+          if (ok) appliedPitchHit = true;
+        }
+      }
+
+      if (dbgOn) {
+        const outcome = classifyOnsetDebugOutcome(appliedPitchHit, r, best.ev);
+        let refNh = r.notes[0];
+        for (let i = 0; i < best.ev.notes.length; i++) {
+          const cn = best.ev.notes[i];
+          const nh = r.notes[i];
+          if (cn && !cn.dead && nh) {
+            refNh = nh;
+            break;
+          }
+        }
+        let traceSnap = buildTraceSnapshots(r);
+        if (traceSnap?.kind === "bp" && !useFallback) {
+          const dropped = basicPitchDetectorRef.current?.stabilizerDroppedMidisAt(onsetCtxMs) ?? [];
+          if (dropped.length) traceSnap = { ...traceSnap, stabilizerDroppedMidis: dropped };
+        }
+        debugCaptureRef.current.push({
+          songTimeSec: songTime,
+          audioContextTime: payload.audioContextTime,
+          outcome,
+          latencyMsSetting: latencyMs,
+          verdict: refNh?.verdict ?? null,
+          timingErrorMs: refNh?.timingErrorMs ?? null,
+          expectedEvent: snapshotChartEvent(best.ev),
+          isPoly: r.isPoly,
+          rms: payload.rms,
+          flux,
+          fluxThreshold,
+          candidates: candSnap,
+          trace: traceSnap,
+          spectrum: specNums,
+          waveSnippet: waveNums,
+          detectedMidiGlob: r.detectedMidi,
+          handlerProbeMs: { evidenceMs: tEv1 - tEv0, scoreMs: tSc1 - tSc0 },
+          ...(pitchDiagRef.current != null ? { pitchTelemetry: pitchDiagRef.current } : {}),
+        });
+      }
+
+      if (
+        !appliedPitchHit &&
+        payload.rms >= MIC_RMS_GATE_HINT &&
+        r.detectedMidi != null &&
+        Number.isFinite(r.detectedMidi)
+      ) {
+        triggerWrongFlash(r.detectedMidi);
+      }
+    };
+
     const setupAndRun = async (stream: MediaStream) => {
       const ctx = tr.ctx;
       if (cancelled) return;
       disposeCapture();
       capture = new AudioCaptureWorklet(ctx);
-      capture.setOnsetHandler((payload) => {
-        if (cancelled) return;
-        const tr2 = transportRef.current;
-        if (!tr2?.playing) return;
-
-        const songTime = audioCtxTimeToSongSec(tr2, payload.audioContextTime);
-        debugAudioSampleRateRef.current = payload.sampleRate;
-        const dbgOn = debugCaptureEnabledRef.current && sourceRef.current === "mic";
-        const flux = typeof payload.flux === "number" ? payload.flux : null;
-        const fluxThreshold = typeof payload.fluxThreshold === "number" ? payload.fluxThreshold : null;
-        const specNums = dbgOn ? DebugCapture.copySpectrum(payload.spectrum) : [];
-        const waveNums = dbgOn ? DebugCapture.copyWaveSnippet(payload.waveSnippet) : [];
-
-        const cands: { ev: ChartEvent; d: number }[] = [];
-        for (const ev of chart.events) {
-          if (!eventHasPendingString(ev, verdictsRef.current)) continue;
-          const d = Math.abs(ev.t0 - songTime);
-          if (d > winSec) continue;
-          cands.push({ ev, d });
-        }
-        cands.sort((a, b) => a.d - b.d);
-
-        const candSnap = cands.slice(0, 2).map((c) => ({
-          eventId: c.ev.id,
-          deltaSec: c.d,
-        }));
-
-        const best = cands[0] ?? null;
-        if (!best) {
-          if (dbgOn) {
-            debugCaptureRef.current.push({
-              songTimeSec: songTime,
-              audioContextTime: payload.audioContextTime,
-              outcome: "unmatched-onset",
-              latencyMsSetting: latencyMs,
-              verdict: null,
-              timingErrorMs: null,
-              expectedEvent: null,
-              isPoly: null,
-              rms: payload.rms,
-              flux,
-              fluxThreshold,
-              candidates: candSnap,
-              trace: null,
-              spectrum: specNums,
-              waveSnippet: waveNums,
-              detectedMidiGlob: null,
-              ...(pitchDiagRef.current != null ? { pitchTelemetry: pitchDiagRef.current } : {}),
-            });
-          }
-          return;
-        }
-
-        const pdCfg = loadPitchDetectionConfig();
-        const onsetCtxMs = payload.audioContextTime * 1000;
-        const evidence =
-          basicPitchDetectorRef.current?.midisEvidenceAt(onsetCtxMs) ?? new Set<number>();
-        const useFallback = evidence.size === 0 && pdCfg.fallbackHarmonicVerifier;
-
-        const r = useFallback
-          ? scoreOnsetAgainstEvent(
-              best.ev,
-              songTime,
-              payload.waveSnippet,
-              payload.spectrum,
-              payload.sampleRate,
-              latencyMs,
-            )
-          : scoreBpOnsetAgainstEvent(best.ev, songTime, evidence, latencyMs);
-
-        let appliedPitchHit = false;
-        for (const nh of r.notes) {
-          if (nh.pitchOk && nh.verdict !== "miss") {
-            const ok = applyVerdictForString(best.ev.id, nh.string, nh.verdict, nh.timingErrorMs);
-            if (ok) appliedPitchHit = true;
-          }
-        }
-
-        if (dbgOn) {
-          const outcome = classifyOnsetDebugOutcome(appliedPitchHit, r, best.ev);
-          let refNh = r.notes[0];
-          for (let i = 0; i < best.ev.notes.length; i++) {
-            const cn = best.ev.notes[i];
-            const nh = r.notes[i];
-            if (cn && !cn.dead && nh) {
-              refNh = nh;
-              break;
-            }
-          }
-          debugCaptureRef.current.push({
-            songTimeSec: songTime,
-            audioContextTime: payload.audioContextTime,
-            outcome,
-            latencyMsSetting: latencyMs,
-            verdict: refNh?.verdict ?? null,
-            timingErrorMs: refNh?.timingErrorMs ?? null,
-            expectedEvent: snapshotChartEvent(best.ev),
-            isPoly: r.isPoly,
-            rms: payload.rms,
-            flux,
-            fluxThreshold,
-            candidates: candSnap,
-            trace: buildTraceSnapshots(r),
-            spectrum: specNums,
-            waveSnippet: waveNums,
-            detectedMidiGlob: r.detectedMidi,
-            ...(pitchDiagRef.current != null ? { pitchTelemetry: pitchDiagRef.current } : {}),
-          });
-        }
-
-        if (
-          !appliedPitchHit &&
-          payload.rms >= MIC_RMS_GATE_HINT &&
-          r.detectedMidi != null &&
-          Number.isFinite(r.detectedMidi)
-        ) {
-          triggerWrongFlash(r.detectedMidi);
-        }
-      });
-
+      capture.setOnsetHandler(onCapturePayload);
       try {
         await capture.connect(stream);
         if (!cancelled) {
@@ -1013,20 +1147,62 @@ export function PracticeClient({ chart, songId, trackId, songTitle, trackName }:
       }
     };
 
-    const existing = micStreamRef.current;
-    if (existing && existing.getAudioTracks().some((t) => t.readyState === "live")) {
-      void setupAndRun(existing);
+    const setupFileAndRun = async () => {
+      const ctx = tr.ctx;
+      if (cancelled) return;
+      const el = fileInputAudioRef.current;
+      if (!el?.src) {
+        if (!cancelled) setPlayAlongError("Choose an audio file for File input.");
+        return;
+      }
+      disposeCapture();
+      capture = new AudioCaptureWorklet(ctx);
+      capture.setOnsetHandler(onCapturePayload);
+      try {
+        await tr.ctx.resume().catch(() => {});
+        let mes = fileMediaElementSourceRef.current;
+        if (!mes) {
+          mes = tr.ctx.createMediaElementSource(el);
+          fileMediaElementSourceRef.current = mes;
+        }
+        await capture.connectFromNode(mes, { gain: 0.88, destination: tr.outputGain });
+        if (!cancelled) {
+          const det = basicPitchDetectorRef.current ?? new BasicPitchDetector(ctx);
+          basicPitchDetectorRef.current = det;
+          det.attachCapture(capture);
+          det.onMetrics = (snap) => {
+            pitchDiagRef.current = snap;
+          };
+          await det.init().catch(() => {
+            /* model load failure — fall back entirely to harmonic path */
+          });
+          det.start();
+        }
+        setPlayAlongError(null);
+      } catch (err) {
+        if (!cancelled)
+          setPlayAlongError(err instanceof Error ? err.message : "File audio routing failed.");
+        disposeCapture();
+      }
+    };
+    if (source === "file") {
+      void setupFileAndRun();
     } else {
-      void requestMicStream()
-        .then((s) => {
-          if (!cancelled) {
-            void tr.ctx.resume().catch(() => {});
-            void setupAndRun(s);
-          }
-        })
-        .catch((err) => {
-          if (!cancelled) setPlayAlongError(describeMicError(err));
-        });
+      const existing = micStreamRef.current;
+      if (existing && existing.getAudioTracks().some((t) => t.readyState === "live")) {
+        void setupAndRun(existing);
+      } else {
+        void requestMicStream()
+          .then((s) => {
+            if (!cancelled) {
+              void tr.ctx.resume().catch(() => {});
+              void setupAndRun(s);
+            }
+          })
+          .catch((err) => {
+            if (!cancelled) setPlayAlongError(describeMicError(err));
+          });
+      }
     }
 
     return () => {
@@ -1034,7 +1210,25 @@ export function PracticeClient({ chart, songId, trackId, songTitle, trackName }:
       disposeCapture();
       window.clearTimeout(wrongFlashTimerRef.current);
     };
-  }, [playAlong, source, chart, latencyMs, applyVerdictForString, requestMicStream]);
+  }, [playAlong, source, chart, latencyMs, applyVerdictForString, requestMicStream, debugInputFileName]);
+
+  useEffect(() => {
+    if (!playAlong || source !== "file") return;
+    const tr = transportRef.current;
+    const el = fileInputAudioRef.current;
+    if (!tr?.playing || !el?.src) return;
+    const song = getSongTime(tr);
+    const rate = tr.playbackRate > 0 ? tr.playbackRate : 1;
+    if (el.playbackRate !== rate) el.playbackRate = rate;
+    if (song < 0) {
+      if (!el.paused) el.pause();
+      el.currentTime = 0;
+      return;
+    }
+    const drift = Math.abs(el.currentTime - song);
+    if (drift > 0.12) el.currentTime = song;
+    if (el.paused) void el.play().catch(() => {});
+  }, [tick, playAlong, source]);
 
   // Release the mic when play-along is off or switched to emulate so the browser
   // tab indicator clears and other apps can use the device.
@@ -1172,6 +1366,10 @@ export function PracticeClient({ chart, songId, trackId, songTitle, trackName }:
     debugUploadedKey,
     songId,
     trackId,
+    debugSessionRecord,
+    setDebugSessionRecord: persistDebugSessionRecord,
+    debugInputFileName,
+    onDebugAudioFile: onDebugFileChange,
   };
 
   const desktopControls = <PracticeControls {...controlsProps} showSeek desktopTwoColumn />;
@@ -1217,7 +1415,9 @@ export function PracticeClient({ chart, songId, trackId, songTitle, trackName }:
 
   if (isMobile && started) {
     return (
-      <MobilePlayShell
+      <>
+        <audio ref={fileInputAudioRef} className="hidden" crossOrigin="anonymous" playsInline preload="auto" />
+        <MobilePlayShell
         highway={highwayMobile}
         portrait={portrait}
         menuOpen={menuOpen}
@@ -1249,6 +1449,7 @@ export function PracticeClient({ chart, songId, trackId, songTitle, trackName }:
         speedStep={0.05}
         onExitToLibrary={exitToLibrary}
       />
+      </>
     );
   }
 
@@ -1257,6 +1458,7 @@ export function PracticeClient({ chart, songId, trackId, songTitle, trackName }:
 
   return (
     <div className="flex flex-col gap-4 w-full max-w-6xl">
+      <audio ref={fileInputAudioRef} className="hidden" crossOrigin="anonymous" playsInline preload="auto" />
       <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-zinc-400 font-mono">
         <span>
           <span className="text-zinc-500">BPM</span> {bpmLabel ?? "—"}

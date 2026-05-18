@@ -1,6 +1,9 @@
 import { z } from "zod";
 import { DEBUG_REPORT_VERSION } from "./debug-capture";
 
+export const DEBUG_REPORT_VERSIONS = [1, 2] as const;
+export type DebugReportVersion = (typeof DEBUG_REPORT_VERSIONS)[number];
+
 export const MAX_DEBUG_DECISIONS = 1000;
 
 const verdictSchema = z.enum(["perfect", "slightEarly", "slightLate", "early", "late", "miss"]);
@@ -67,6 +70,7 @@ export const debugDecisionSchema = z.object({
         kind: z.literal("bp"),
         evidenceMidis: z.array(z.number()),
         dominantMidi: z.number().nullable(),
+        stabilizerDroppedMidis: z.array(z.number()).optional(),
       }),
     ])
     .nullable(),
@@ -92,10 +96,16 @@ export const debugDecisionSchema = z.object({
     })
     .nullable()
     .optional(),
+  handlerProbeMs: z
+    .object({
+      evidenceMs: z.number(),
+      scoreMs: z.number(),
+    })
+    .optional(),
 });
 
 export const debugReportBodySchema = z.object({
-  version: z.literal(DEBUG_REPORT_VERSION),
+  version: z.union([z.literal(1), z.literal(DEBUG_REPORT_VERSION)]),
   meta: z.object({
     songId: z.string().uuid(),
     trackId: z.string().uuid(),
@@ -106,6 +116,9 @@ export const debugReportBodySchema = z.object({
     capturedAtIso: z.string(),
     reason: z.enum(["manual", "run-complete", "pause", "exit"]).optional(),
     audioSampleRate: z.number().positive().finite().optional(),
+    audioRecordingKey: z.string().optional(),
+    audioRecordingMime: z.string().optional(),
+    audioRecordingDurationSec: z.number().nonnegative().optional(),
   }),
   decisions: z.array(debugDecisionSchema).max(MAX_DEBUG_DECISIONS),
 });

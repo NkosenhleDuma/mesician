@@ -2,7 +2,7 @@ import type { Verdict } from "./engine";
 import type { DetectionMetricsSnapshot } from "@/lib/detection/pitch-detection-metrics";
 
 /** Version for analysis scripts parsing MinIO blobs. */
-export const DEBUG_REPORT_VERSION = 1;
+export const DEBUG_REPORT_VERSION = 2;
 
 export type DebugDecisionOutcome =
   | "accepted"
@@ -30,6 +30,8 @@ export type BpTraceSnapshot = {
   kind: "bp";
   evidenceMidis: number[];
   dominantMidi: number | null;
+  /** Active stabilizer voices overlapping onset but excluded by maxSimulNotes / confidence gate */
+  stabilizerDroppedMidis?: number[];
 };
 
 export type MonoTraceSnapshot = {
@@ -84,6 +86,12 @@ export type DebugDecision = {
   detectedMidiGlob: number | null;
 
   pitchTelemetry?: DetectionMetricsSnapshot | null;
+
+  /** Wall-clock timing inside onset handler when debug capture is on (v2+) */
+  handlerProbeMs?: {
+    evidenceMs: number;
+    scoreMs: number;
+  };
 };
 
 export type DebugReportMeta = {
@@ -98,10 +106,15 @@ export type DebugReportMeta = {
   reason?: DebugReportFlushReason;
   /** AudioContext / worklet sample rate for replaying spectra + YIN (omitted on older blobs) */
   audioSampleRate?: number;
+  /** Sibling object key for optional session recording (.webm / .ogg) */
+  audioRecordingKey?: string;
+  audioRecordingMime?: string;
+  /** Best-effort duration from recorder or audio element */
+  audioRecordingDurationSec?: number;
 };
 
 export type DebugReport = {
-  version: typeof DEBUG_REPORT_VERSION;
+  version: 1 | typeof DEBUG_REPORT_VERSION;
   meta: DebugReportMeta;
   decisions: DebugDecision[];
 };

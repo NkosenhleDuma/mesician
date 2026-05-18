@@ -120,6 +120,21 @@ export class PolyphonicStabilizer {
     return s;
   }
 
+  /**
+   * All ledger MIDIs overlapping the anchor (ignores maxSimulNotes / confidence gate).
+   * Compare with `midisEvidenceAt` for stabilizer "dropped" debugging.
+   */
+  midisRawActiveAt(anchorCtxMs: number): Set<number> {
+    const hw = this.cfg.bpPitchEvidenceWindowMs;
+    const s = new Set<number>();
+    for (const row of this.active.values()) {
+      if (anchorCtxMs + hw >= row.mergedStartMs && anchorCtxMs - hw <= row.mergedEndMs) {
+        s.add(row.pitchMidi);
+      }
+    }
+    return s;
+  }
+
   reset(): void {
     this.active.clear();
   }

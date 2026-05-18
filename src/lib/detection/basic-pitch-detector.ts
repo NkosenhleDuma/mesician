@@ -121,6 +121,20 @@ export class BasicPitchDetector {
     return this.stabilizer.midisEvidenceAt(anchorCtxMs);
   }
 
+  /**
+   * Pitches that overlap the anchor in the stabilizer ledger but are excluded from the
+   * scored evidence set (cap / confidence gate).
+   */
+  stabilizerDroppedMidisAt(anchorCtxMs: number): number[] {
+    const raw = this.stabilizer.midisRawActiveAt(anchorCtxMs);
+    const ev = this.stabilizer.midisEvidenceAt(anchorCtxMs);
+    const dropped: number[] = [];
+    for (const m of raw) {
+      if (!ev.has(m)) dropped.push(m);
+    }
+    return dropped.sort((a, b) => a - b);
+  }
+
   private emitMetrics(): void {
     if (!this.cfg.metricsEnabled) return;
     const snap = this.metricsStore.snapshot(this.inflight, this.stabilizer.snapshot().length);

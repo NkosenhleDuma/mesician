@@ -34,6 +34,7 @@ import {
 
 const PLAY_ALONG_SOURCES: { value: PlayAlongSource; label: string }[] = [
   { value: "mic", label: "Mic" },
+  { value: "file", label: "File" },
   { value: "emulate", label: "Emulate" },
 ];
 
@@ -153,6 +154,11 @@ export type PracticeControlsProps = {
   debugUploadedKey?: string | null;
   songId?: string;
   trackId?: string;
+  /** Mic-only: record WebM sidecar uploaded with debug JSON */
+  debugSessionRecord?: boolean;
+  setDebugSessionRecord?: (enabled: boolean) => void;
+  debugInputFileName?: string | null;
+  onDebugAudioFile?: (file: File | null) => void;
 };
 
 export function PracticeControls({
@@ -200,6 +206,10 @@ export function PracticeControls({
   debugUploadedKey,
   songId,
   trackId,
+  debugSessionRecord = false,
+  setDebugSessionRecord,
+  debugInputFileName,
+  onDebugAudioFile,
 }: PracticeControlsProps) {
   const transportColumn = (
     <>
@@ -410,18 +420,21 @@ export function PracticeControls({
         <>
           <div className="flex flex-col gap-2">
             <span className="text-[11px] uppercase tracking-wide text-zinc-500">Source</span>
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-3 gap-2">
               {PLAY_ALONG_SOURCES.map((option) => (
                 <button
                   key={option.value}
                   type="button"
-                  className={`px-3 py-2 rounded-md text-sm font-medium ${
+                  className={`px-2 py-2 rounded-md text-sm font-medium ${
                     source === option.value
                       ? "bg-sky-600 text-white"
                       : "bg-zinc-800 text-zinc-300 hover:bg-zinc-700"
                   }`}
                   onClick={async () => {
                     if (option.value === source) return;
+                    if (source === "file" && option.value !== "file") {
+                      onDebugAudioFile?.(null);
+                    }
                     if (option.value === "mic" && acquireMic) {
                       const ok = await acquireMic();
                       if (!ok) return; // keep previous source
@@ -475,9 +488,52 @@ export function PracticeControls({
             </div>
           ) : (
             <div className="flex flex-col gap-3">
-              <p className="text-xs text-zinc-400">
-                Listen to the live audio feed and score the closest pending note.
-              </p>
+              {source === "file" ? (
+                <>
+                  <p className="text-xs text-zinc-400">
+                    Route a local audio file through the same onset + Basic Pitch path as the mic, clocked to the chart
+                    transport.
+                  </p>
+                  <label className="flex flex-col gap-1 text-xs text-zinc-300">
+                    Audio file
+                    <input
+                      type="file"
+                      accept="audio/*"
+                      className="text-[11px] file:mr-2 file:rounded file:border-0 file:bg-zinc-700 file:px-2 file:py-1"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0] ?? null;
+                        onDebugAudioFile?.(f);
+                      }}
+                    />
+                  </label>
+                  {debugInputFileName ? (
+                    <p className="text-[11px] font-mono text-zinc-500 truncate" title={debugInputFileName}>
+                      {debugInputFileName}
+                    </p>
+                  ) : (
+                    <p className="text-[11px] text-amber-400/90">Select a file to enable detection.</p>
+                  )}
+                </>
+              ) : (
+                <p className="text-xs text-zinc-400">
+                  Listen to the live audio feed and score the closest pending note.
+                </p>
+              )}
+              {source === "mic" && (
+                <label className="flex items-start gap-2 text-xs text-zinc-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5 rounded border-zinc-600"
+                    checked={debugSessionRecord}
+                    onChange={(e) => setDebugSessionRecord?.(e.target.checked)}
+                    disabled={!setDebugSessionRecord}
+                  />
+                  <span>
+                    <span className="font-medium text-sky-200/95">Record session audio</span> — WebM sidecar with
+                    debug uploads (mic only).
+                  </span>
+                </label>
+              )}
               <label className="flex items-start gap-2 text-xs text-zinc-300 cursor-pointer">
                 <input
                   type="checkbox"
@@ -495,9 +551,7 @@ export function PracticeControls({
               <div className="flex flex-col gap-1">
                 <button
                   type="button"
-                  disabled={
-                    debugReportBusy || !onSendDebugReport || !debugCaptureEnabled
-                  }
+                  disabled={debugReportBusy || !onSendDebugReport || !debugCaptureEnabled}
                   className="w-full px-3 py-2 rounded-md bg-violet-800/70 text-sm text-white hover:bg-violet-700 disabled:opacity-50"
                   onClick={() => {
                     void onSendDebugReport?.();

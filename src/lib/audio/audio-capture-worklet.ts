@@ -46,11 +46,15 @@ export type PcmTailPayload = {
 
 export type OnsetHandler = (payload: OnsetPayload) => void;
 
-/** Mic → AudioWorkletNode (no outputs); forwards onset messages to handler. */
+/** Mic / file → AudioWorkletNode (no outputs); forwards onset messages to handler. */
 export class AudioCaptureWorklet {
   private node: AudioWorkletNode | null = null;
 
-  private source: MediaStreamAudioSourceNode | null = null;
+  private streamSource: MediaStreamAudioSourceNode | null = null;
+
+  private inputNodeOwner: AudioNode | null = null;
+
+  private hearGain: GainNode | null = null;
 
   private handler: OnsetHandler | null = null;
 
@@ -158,7 +162,40 @@ export class AudioCaptureWorklet {
     const src = this.ctx.createMediaStreamSource(stream);
     src.connect(node);
     this.node = node;
-    this.source = src;
+    this.streamSource = src;
+    this.inputNodeOwner = null;
+    this.hearGain = null;
+  }
+
+  /**
+   * Feed capture from any mono audio node (e.g. MediaElementSource for debug file input).
+   * When `monitorGain` > 0, duplicates the signal to `monitorDestination` so the user hears playback.
+   */
+  async connectFromNode(
+    source: AudioNode,
+    monitor?: { gain: number; destination: AudioNode },
+  ): Promise<void> {
+    await ensureAudioCaptureWorklet(this.ctx);
+    this.disconnect();
+    const node = new AudioWorkletNode(this.ctx, "audio-capture-processor", {
+      numberOfInputs: 1,
+      numberOfOutputs: 0,
+      channelCount: 1,
+    });
+    node.port.onmessage = this.boundOnMessage;
+    source.connect(node);
+    this.node = node;
+    this.streamSource = null;
+    this.inputNodeOwner = source;
+    if (monitor && monitor.gain > 0) {
+      const g = this.ctx.createGain();
+      g.gain.value = monitor.gain;
+      source.connect(g);
+      g.connect(monitor.destination);
+      this.hearGain = g;
+    } else {
+      this.hearGain = null;
+    }
   }
 
   disconnect(): void {
@@ -167,22 +204,58 @@ export class AudioCaptureWorklet {
       p.reject(new Error("capture disconnected"));
     }
     this.pendingPcm.clear();
-    if (this.node) {
-      this.node.port.onmessage = null;
+
+    const node = this.node;
+    if (node) {
+      node.port.onmessage = null;
+    }
+
+    if (this.streamSource && node) {
       try {
-        this.node.disconnect();
+        this.streamSource.disconnect(node);
       } catch {
         /* ignore */
       }
     }
-    if (this.source) {
+    if (this.inputNodeOwner && node) {
       try {
-        this.source.disconnect();
+        this.inputNodeOwner.disconnect(node);
       } catch {
         /* ignore */
       }
     }
+    if (this.inputNodeOwner && this.hearGain) {
+      try {
+        this.inputNodeOwner.disconnect(this.hearGain);
+      } catch {
+        /* ignore */
+      }
+    }
+    if (this.hearGain) {
+      try {
+        this.hearGain.disconnect();
+      } catch {
+        /* ignore */
+      }
+    }
+    if (node) {
+      try {
+        node.disconnect();
+      } catch {
+        /* ignore */
+      }
+    }
+    if (this.streamSource) {
+      try {
+        this.streamSource.disconnect();
+      } catch {
+        /* ignore */
+      }
+    }
+
     this.node = null;
-    this.source = null;
+    this.streamSource = null;
+    this.inputNodeOwner = null;
+    this.hearGain = null;
   }
 }

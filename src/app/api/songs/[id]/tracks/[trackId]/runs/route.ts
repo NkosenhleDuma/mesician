@@ -16,7 +16,7 @@ const postBodySchema = z.object({
     miss: z.number().int().nonnegative(),
   }),
   durationSec: z.number().nonnegative(),
-  source: z.enum(["mic", "emulate"]),
+  source: z.enum(["mic", "emulate", "file"]),
   startedAt: z.string().optional(),
 });
 

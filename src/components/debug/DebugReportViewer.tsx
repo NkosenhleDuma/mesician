@@ -1,14 +1,16 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { debugReportBodySchema, type DebugReportBody } from "@/lib/scoring/debug-report-schema";
 import {
   MONO_CENTS_TOLERANCE,
   POLY_SUPPORT_THRESHOLD,
   YIN_CMNDF_MAX,
+  evidenceMidiMatchesExpected,
   type OnsetRecognizerTuning,
 } from "@/lib/scoring/recognize";
+import { playFloatSnippet, playMidiPreview } from "@/lib/audio/debug-note-preview";
 import { VERDICT_WINDOWS_MS } from "@/lib/scoring/engine";
 import {
   isReplayableDecision,
@@ -33,6 +35,21 @@ function midiLabel(m: number): string {
   return `${name}${octave}`;
 }
 
+function expectedMidisNonDead(
+  ev: DebugReportBody["decisions"][number]["expectedEvent"],
+): number[] {
+  if (!ev) return [];
+  return ev.notes.filter((n) => !n.dead).map((n) => n.midi);
+}
+
+function detectedMidisForPreview(d: DebugReportBody["decisions"][number]): number[] {
+  if (d.trace?.kind === "bp") return [...d.trace.evidenceMidis];
+  if (d.trace?.kind === "poly") return d.trace.perNote.map((p) => p.midi);
+  if (d.trace?.kind === "mono" && d.trace.detectedMidi != null) return [Math.round(d.trace.detectedMidi)];
+  if (d.detectedMidiGlob != null) return [Math.round(d.detectedMidiGlob)];
+  return [];
+}
+
 function outcomeBadgeClass(outcome: string): string {
   switch (outcome) {
     case "accepted":
@@ -51,6 +68,8 @@ function outcomeBadgeClass(outcome: string): string {
 }
 
 export function DebugReportViewer({ songId, trackId, songTitle, trackName, initialKey }: Props) {
+  const sessionAudioRef = useRef<HTMLAudioElement | null>(null);
+
   const [items, setItems] = useState<Array<{ key: string; lastModified: string | null }>>([]);
   const [listErr, setListErr] = useState<string | null>(null);
   const [listLoading, setListLoading] = useState(true);
@@ -153,13 +172,29 @@ export function DebugReportViewer({ songId, trackId, songTitle, trackName, initi
     return { total, diff };
   }, [report, latencyMs, tuning]);
 
+  const reportTelemetrySummary = useMemo(() => {
+    if (!report) return null;
+    for (let i = report.decisions.length - 1; i >= 0; i--) {
+      const t = report.decisions[i]!.pitchTelemetry;
+      if (t) return t;
+    }
+    return null;
+  }, [report]);
+
+  const seekSessionAudio = useCallback((songTimeSec: number) => {
+    const el = sessionAudioRef.current;
+    if (!el) return;
+    el.currentTime = Math.max(0, songTimeSec);
+    void el.play().catch(() => {});
+  }, []);
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
-          <h1 className="text-xl font-semibold text-white">Mic debug · {trackName}</h1>
+          <h1 className="text-xl font-semibold text-white">Practice debug · {trackName}</h1>
           <p className="text-sm text-zinc-500">
-            {songTitle} — reports saved from practice (mic, debug capture on).
+            {songTitle} — mic / file captures with debug enabled from practice.
           </p>
         </div>
         <div className="flex flex-wrap gap-4">
@@ -233,11 +268,38 @@ export function DebugReportViewer({ songId, trackId, songTitle, trackName, initi
                   <span className="text-zinc-200">{report.meta.audioSampleRate} Hz</span>
                 </span>
               )}
+              {report.meta.audioRecordingMime != null && (
+                <span>
+                  Recording: <span className="text-zinc-200">{report.meta.audioRecordingMime}</span>
+                </span>
+              )}
             </div>
             <p className="mt-2 text-zinc-500">
               Replay differs on {replayStats.diff} / {replayStats.total} onset rows (tuning sliders below).
             </p>
           </div>
+
+          {report.meta.audioRecordingKey ? (
+            <div className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-4 space-y-2">
+              <h2 className="text-sm font-medium text-white">Session audio</h2>
+              <p className="text-xs text-zinc-500">
+                Recorded alongside this report. Use &quot;Play at song time&quot; on a row to seek.
+              </p>
+              <audio
+                ref={sessionAudioRef}
+                controls
+                className="w-full max-w-xl"
+                src={`/api/debug/session-audio?key=${encodeURIComponent(report.meta.audioRecordingKey)}`}
+              />
+            </div>
+          ) : null}
+
+          {reportTelemetrySummary ? (
+            <div className="rounded-lg border border-zinc-800 bg-zinc-900/30 p-4">
+              <h2 className="text-sm font-medium text-white">Run Basic Pitch metrics (latest snapshot)</h2>
+              <TelemetryGrid t={reportTelemetrySummary} />
+            </div>
+          ) : null}
 
           <section className="space-y-3 rounded-lg border border-zinc-800 bg-zinc-900/30 p-4">
             <h2 className="text-sm font-medium text-white">Replay tuning</h2>
@@ -277,11 +339,37 @@ export function DebugReportViewer({ songId, trackId, songTitle, trackName, initi
                 meta={report.meta}
                 latencyMs={latencyMs}
                 tuning={tuning}
+                onSeekSessionAudio={report.meta.audioRecordingKey ? seekSessionAudio : undefined}
               />
             ))}
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+function TelemetryGrid({
+  t,
+}: {
+  t: NonNullable<DebugReportBody["decisions"][number]["pitchTelemetry"]>;
+}) {
+  return (
+    <div className="mt-2 grid gap-1 font-mono text-[11px] text-zinc-400 sm:grid-cols-2 lg:grid-cols-3">
+      <div>ts {t.tsMs.toFixed(0)} ms</div>
+      <div>infer avg {t.avgInferMs.toFixed(2)} ms</div>
+      <div>p95 infer {t.p95InferMs.toFixed(2)} ms</div>
+      <div>decode avg {t.avgDecodeMs.toFixed(2)} ms</div>
+      <div>resample avg {t.avgResampleMs.toFixed(2)} ms</div>
+      <div>sched lag avg {t.avgSchedulerLagMs.toFixed(2)} ms</div>
+      <div>inflight {t.inflight}</div>
+      <div>dropped wins {t.droppedWindowsTotal}</div>
+      <div>windows/s {t.windowsPerSec.toFixed(2)}</div>
+      <div>rms avg {t.rmsAvg.toFixed(5)}</div>
+      <div>active notes {t.activeNotesNow}</div>
+      <div>notes/s {t.notesEmittedPerSec.toFixed(2)}</div>
+      <div>note-on avg {t.avgNoteOnLatencyMs.toFixed(2)} ms</div>
+      <div>note-on p95 {t.p95NoteOnLatencyMs.toFixed(2)} ms</div>
     </div>
   );
 }
@@ -325,11 +413,13 @@ function DecisionCard({
   meta,
   latencyMs,
   tuning,
+  onSeekSessionAudio,
 }: {
   decision: DebugReportBody["decisions"][number];
   meta: DebugReportBody["meta"];
   latencyMs: number;
   tuning: OnsetRecognizerTuning;
+  onSeekSessionAudio?: (songTimeSec: number) => void;
 }) {
   const replayed = useMemo(() => {
     if (!isReplayableDecision(d)) return null;
@@ -358,6 +448,44 @@ function DecisionCard({
           </span>
         )}
         <span className="text-xs text-zinc-500">latency@{d.latencyMsSetting}ms</span>
+        {onSeekSessionAudio && (
+          <button
+            type="button"
+            className="text-[11px] text-sky-400 hover:text-sky-300"
+            onClick={() => onSeekSessionAudio(d.songTimeSec)}
+          >
+            Play at song time
+          </button>
+        )}
+      </div>
+
+      <div className="mt-2 flex flex-wrap gap-2">
+        <button
+          type="button"
+          className="rounded-md bg-zinc-800 px-2 py-1 text-[11px] text-zinc-200 hover:bg-zinc-700 disabled:opacity-40"
+          disabled={expectedMidisNonDead(d.expectedEvent).length === 0}
+          onClick={() => void playMidiPreview(expectedMidisNonDead(d.expectedEvent))}
+        >
+          Play expected
+        </button>
+        <button
+          type="button"
+          className="rounded-md bg-zinc-800 px-2 py-1 text-[11px] text-zinc-200 hover:bg-zinc-700 disabled:opacity-40"
+          disabled={detectedMidisForPreview(d).length === 0}
+          onClick={() => void playMidiPreview(detectedMidisForPreview(d))}
+        >
+          Play detected
+        </button>
+        <button
+          type="button"
+          className="rounded-md bg-zinc-800 px-2 py-1 text-[11px] text-zinc-200 hover:bg-zinc-700 disabled:opacity-40"
+          disabled={d.waveSnippet.length === 0}
+          onClick={() =>
+            void playFloatSnippet(d.waveSnippet, meta.audioSampleRate ?? REPLAY_SAMPLE_RATE_FALLBACK)
+          }
+        >
+          Play snippet
+        </button>
       </div>
 
       {replayed != null && (
@@ -443,11 +571,55 @@ function DecisionCard({
           {d.trace?.kind === "bp" && (
             <div className="mt-1 space-y-1 text-xs text-zinc-400">
               <p className="text-zinc-500">
-                Basic Pitch evidence (MIDI){d.trace.dominantMidi != null ? ` · dominant ${d.trace.dominantMidi}` : ""}
+                Basic Pitch evidence · dominant {d.trace.dominantMidi != null ? d.trace.dominantMidi : "—"}
               </p>
-              <p className="font-mono break-all text-[11px] text-zinc-300">
-                {d.trace.evidenceMidis.length ? d.trace.evidenceMidis.join(", ") : "—"}
-              </p>
+              <div className="flex flex-wrap gap-1">
+                {d.trace.evidenceMidis.length === 0 ? (
+                  <span className="text-zinc-600">—</span>
+                ) : (
+                  d.trace.evidenceMidis.map((m) => {
+                    const exp = expectedMidisNonDead(d.expectedEvent);
+                    const neutral = exp.length === 0;
+                    const matched = !neutral && evidenceMidiMatchesExpected(m, exp);
+                    return (
+                      <span
+                        key={`e-${m}`}
+                        className={`rounded px-1.5 py-0.5 font-mono text-[10px] ring-1 ${
+                          neutral
+                            ? "bg-zinc-800 text-zinc-200 ring-zinc-700"
+                            : matched
+                              ? "bg-emerald-950/60 text-emerald-200 ring-emerald-900"
+                              : "bg-amber-950/60 text-amber-100 ring-amber-900"
+                        }`}
+                        title={
+                          neutral
+                            ? "no expected chord to compare"
+                            : matched
+                              ? "matches expected (±0.55 semitone)"
+                              : "extra vs expected chart MIDIs"
+                        }
+                      >
+                        {midiLabel(m)} ({m})
+                      </span>
+                    );
+                  })
+                )}
+              </div>
+              {d.trace.stabilizerDroppedMidis != null && d.trace.stabilizerDroppedMidis.length > 0 && (
+                <div className="mt-1">
+                  <p className="text-[10px] uppercase tracking-wide text-violet-400/90">Stabilizer dropped</p>
+                  <div className="mt-0.5 flex flex-wrap gap-1">
+                    {d.trace.stabilizerDroppedMidis.map((m) => (
+                      <span
+                        key={`d-${m}`}
+                        className="rounded bg-violet-950/50 px-1.5 py-0.5 font-mono text-[10px] text-violet-100 ring-1 ring-violet-900"
+                      >
+                        {midiLabel(m)}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
           {!d.trace && <p className="text-xs text-zinc-600">No trace</p>}
@@ -455,18 +627,18 @@ function DecisionCard({
       </div>
 
       {d.pitchTelemetry != null ? (
-        <details className="mt-3 text-xs text-zinc-500">
-          <summary className="cursor-pointer text-zinc-400 hover:text-zinc-300">Basic Pitch metrics</summary>
-          <div className="mt-2 grid gap-1 pl-2 font-mono text-[11px] text-zinc-400 sm:grid-cols-2">
-            <div>infer avg {d.pitchTelemetry.avgInferMs.toFixed(1)} ms</div>
-            <div>p95 infer {d.pitchTelemetry.p95InferMs.toFixed(1)} ms</div>
-            <div>dropped wins {d.pitchTelemetry.droppedWindowsTotal}</div>
-            <div>inflight {d.pitchTelemetry.inflight}</div>
-            <div>rms avg {d.pitchTelemetry.rmsAvg.toFixed(5)}</div>
-            <div>notes/s {d.pitchTelemetry.notesEmittedPerSec.toFixed(1)}</div>
-          </div>
+        <details className="mt-3 text-xs text-zinc-500" open={false}>
+          <summary className="cursor-pointer text-zinc-400 hover:text-zinc-300">Basic Pitch metrics (row snapshot)</summary>
+          <TelemetryGrid t={d.pitchTelemetry} />
         </details>
       ) : null}
+
+      {d.handlerProbeMs != null && (
+        <p className="mt-2 text-[11px] font-mono text-zinc-500">
+          Onset handler: evidence {d.handlerProbeMs.evidenceMs.toFixed(2)} ms · score{" "}
+          {d.handlerProbeMs.scoreMs.toFixed(2)} ms
+        </p>
+      )}
 
       <details className="mt-3 text-xs text-zinc-500">
         <summary className="cursor-pointer text-zinc-400 hover:text-zinc-300">Flux & candidates</summary>

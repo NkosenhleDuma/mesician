@@ -11,7 +11,9 @@ const DEFAULT_PLAY_ALONG_SOURCE = "mic";
 const PRACTICE_MODE_KEY = "mesician_practice_mode";
 const DEBUG_CAPTURE_KEY = "mesician_debug_capture_enabled";
 
-export type PlayAlongSource = "mic" | "emulate";
+const DEBUG_SESSION_RECORD_KEY = "mesician_debug_session_record";
+
+export type PlayAlongSource = "mic" | "emulate" | "file";
 export type PracticeMode = "practice" | "perform";
 
 function clampStoredInt(value: number, min: number, max: number): number {
@@ -55,7 +57,9 @@ export function setStoredPlayAlongEnabled(enabled: boolean) {
 export function getStoredPlayAlongSource(): PlayAlongSource {
   if (typeof window === "undefined") return DEFAULT_PLAY_ALONG_SOURCE;
   const raw = window.localStorage.getItem(PLAY_ALONG_SOURCE_KEY);
-  return raw === "emulate" ? "emulate" : DEFAULT_PLAY_ALONG_SOURCE;
+  if (raw === "emulate") return "emulate";
+  if (raw === "file") return "file";
+  return DEFAULT_PLAY_ALONG_SOURCE;
 }
 
 export function setStoredPlayAlongSource(source: PlayAlongSource) {
@@ -109,4 +113,14 @@ export function getStoredDebugCapture(): boolean {
 export function setStoredDebugCapture(enabled: boolean) {
   if (typeof window === "undefined") return;
   window.localStorage.setItem(DEBUG_CAPTURE_KEY, enabled ? "1" : "0");
+}
+
+export function getStoredDebugSessionRecord(): boolean {
+  if (typeof window === "undefined") return false;
+  return window.localStorage.getItem(DEBUG_SESSION_RECORD_KEY) === "1";
+}
+
+export function setStoredDebugSessionRecord(enabled: boolean) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(DEBUG_SESSION_RECORD_KEY, enabled ? "1" : "0");
 }
