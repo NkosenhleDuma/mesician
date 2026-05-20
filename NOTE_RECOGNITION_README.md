@@ -9,7 +9,7 @@ Related docs:
 
 ## Approach
 
-1. **Verify, don’t transcribe.** The chart (`chart.json`) already specifies expected MIDI notes and times. We never ask “what chord is this?” only whether onset evidence matches those expectations inside timing windows (`±35 / ±80 / ±150 ms`, see [`src/lib/scoring/engine.ts`](src/lib/scoring/engine.ts)).
+1. **Verify, don’t transcribe.** The chart (`chart.json`) already specifies expected MIDI notes and times. We never ask “what chord is this?” only whether onset evidence matches those expectations inside timing windows: symmetric **±35 / ±80 / ±150 ms** for **early** hits and for **late** hits up through `slight`; the outer **late** “off” boundary gains extra ms from chart note length (`[t0,t1]`, see [`classifyTimingDirected`](src/lib/scoring/engine.ts)).
 2. **Onsets drive scoring.** Continuous `requestAnimationFrame` polling was replaced by spectral-flux peaks from an `AudioWorklet`. Hits register on attacks; sustained ringing doesn’t spam verdicts.
 3. **Mono vs poly follows the chart.**  
    - One non-dead sounding note → band-restricted **YIN** on the snippet aligned with the FFT window.  
@@ -49,10 +49,12 @@ flowchart TD
 | [`src/lib/audio/audio-capture-worklet.ts`](src/lib/audio/audio-capture-worklet.ts) | Loads `/worklets/audio-capture-processor.js` via `audioWorklet.addModule`, wraps `AudioWorkletNode` (`numberOfOutputs: 0`), exposes `setOnsetHandler` / `connect` / `disconnect`. |
 | [`src/lib/scoring/spectrum.ts`](src/lib/scoring/spectrum.ts) | Bin-band sums (`±0.5` semitone), guitar-band normalization (~65 Hz–5 kHz), coarse peak MIDI (`inferMidiFromSpectrum`). |
 | [`src/lib/scoring/yin.ts`](src/lib/scoring/yin.ts) | Band-restricted YIN CMNDF search ±2 semitones around expected \(f_0\). |
-| [`src/lib/scoring/recognize.ts`](src/lib/scoring/recognize.ts) | `scoreOnsetAgainstEvent`, mono/poly branches, harmonic weights `[1.0, 0.6, 0.4, 0.25]`, `inferPlayedStringFret` (capo-aware via `effectiveOpenStringMidi`). |
+| [`src/lib/scoring/recognize.ts`](src/lib/scoring/recognize.ts) | `scoreOnsetAgainstEvent` / `scoreBpOnsetAgainstEvent`, mono/poly branches, harmonic weights `[1.0, 0.6, 0.4, 0.25]`, optional **`stringProfile`** adjustments (BP expected MIDI bias, mono cents slack, scaled poly harmonic threshold), `inferPlayedStringFret` (capo-aware via `effectiveOpenStringMidi`). |
 | [`src/lib/scoring/pitch.ts`](src/lib/scoring/pitch.ts) | Tuning helpers; `hzToMidi`; **`effectiveOpenStringMidi`** adds capo for UI inference (chart MIDIs already use AlphaTab `realValue`). |
-| [`src/lib/scoring/engine.ts`](src/lib/scoring/engine.ts) | Verdict math only (`VERDICT_WINDOWS_MS`, `classifyTiming`, `applyVerdictToScore`, types). |
-| [`src/components/practice/PracticeClient.tsx`](src/components/practice/PracticeClient.tsx) | Pairs onsets to nearest pending event; applies hits; brief wrong-note flash when RMS passes gate but nothing matched; maps AudioContext time → song time while playing. |
+| [`src/lib/scoring/engine.ts`](src/lib/scoring/engine.ts) | Verdict math (`VERDICT_WINDOWS_MS`, `classifyTiming`, `classifyTimingDirected` + `lateGraceMsFromDuration`, `applyVerdictToScore`, types). |
+| [`src/components/practice/PracticeClient.tsx`](src/components/practice/PracticeClient.tsx) | Pairs onsets to nearest pending event; applies hits; passes `OnsetRecognizerTuning` with **`stringProfile`** from storage or post-gate snapshot; maps AudioContext time → song time while playing. |
+| [`src/components/practice/PracticeShell.tsx`](src/components/practice/PracticeShell.tsx) | Loads chart; **gates practice** behind open-string calibration when `meta.tuning` has six strings; passes calibrated profile snapshot into `PracticeClient`. |
+| [`src/components/practice/StringCalibrationFlow.tsx`](src/components/practice/StringCalibrationFlow.tsx) | Scrolls synthetic open-string arpegio ([`buildOpenStringCalibrationChart`](src/lib/calibration/build-calibration-chart.ts)); mic + Basic Pitch + [`verifyCalibrationPitch`](src/lib/calibration/verify-calibration-pitch.ts); merges [`StringProfile`](src/lib/calibration/string-profile.ts) to `localStorage`. |
 | [`src/components/practice/PracticeControls.tsx`](src/components/practice/PracticeControls.tsx) | Shows optional wrong-note hint line next to last hit. |
 
 ## Worklet ↔ main message contract
@@ -91,6 +93,15 @@ Same clock domain as [`getSongTime`](src/lib/audio/transport.ts). User-adjustabl
 
 The separate interval-driven **miss timer** (still in `PracticeClient`) fires when adjusted song time passes each note window without a verdict — unchanged from before.
 
+### String calibration (before practice)
+
+Tracks with **`meta.tuning` length six** enter [`StringCalibrationFlow`](src/components/practice/StringCalibrationFlow.tsx) once per visit (after [`PracticeShell`](src/components/practice/PracticeShell.tsx) loads the chart). The UI scrolls a **synthetic six-note open-string arpeggio** (capo-aware sounding MIDIs via [`chartNoteMidi`](src/lib/chart/note-midi.ts)). Transport volume is zero (visual cues only); the player plucks each string as notes cross the highway playhead.
+
+- Successfully detected notes merge samples into [`StringProfile`](src/lib/calibration/string-profile.ts), persisted under `mesician_string_profile_v1` in [`storage.ts`](src/lib/calibration/storage.ts); key = tuning + capo fret.
+- **Skip for now** still opens practice; scoring falls back until a profile matches the chart meta.
+- **Practice and perform modes** share the same mic path — `PracticeClient` always passes `stringProfile` through `scoreBpOnsetAgainstEvent` / harmonic fallback whenever a matching profile exists (not gated on mode).
+- **Debug uploads** (`DEBUG_REPORT_VERSION` **3**) include optional **`meta.stringProfile`** for offline replay parity (viewer shows a compact table).
+
 ## Tuneable knobs (defaults)
 
 | Knob | Default | Where |
@@ -121,10 +132,10 @@ Ghost-hit overlays on the highway were removed. Instead, when an onset fires ins
 
 ## Out of scope (see V2 Stage 4)
 
-- Adaptive per-user thresholds  
+- Global adaptive flux / RMS auto-tuning (string profile adjusts pitch paths only today)  
 - Guided latency calibration UI beyond stored `latencyMs`  
 - Cents visualization on the highway  
-- ML transcription (Basic Pitch, CREPE, etc.)  
+- ML transcription (Basic Pitch offline-only; live path stays verify-first, not CREPE-grade AMT)  
 - `SharedArrayBuffer` ring buffers  
 
 ## Troubleshooting

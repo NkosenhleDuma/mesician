@@ -1,8 +1,10 @@
 import type { Verdict } from "./engine";
 import type { DetectionMetricsSnapshot } from "@/lib/detection/pitch-detection-metrics";
 
+import type { StringProfile } from "../calibration/string-profile";
+
 /** Version for analysis scripts parsing MinIO blobs. */
-export const DEBUG_REPORT_VERSION = 2;
+export const DEBUG_REPORT_VERSION = 3;
 
 export type DebugDecisionOutcome =
   | "accepted"
@@ -17,8 +19,12 @@ export type DebugReportFlushReason = "manual" | "run-complete" | "pause" | "exit
 export type ExpectedEventSnapshot = {
   id: string;
   t0: number;
-  notes: Array<{ string: number; midi: number; dead?: boolean }>;
+  /** End of chart note; omitted in older captures — treated as `t0` for timing grace. */
+  t1?: number;
+  notes: Array<{ string: number; midi: number; dead?: boolean; palmMute?: boolean }>;
   kind: string;
+  /** e.g. GP "mute" for palm-muted passage */
+  tech?: string[];
 };
 
 export type CandidateSnapshot = {
@@ -111,10 +117,12 @@ export type DebugReportMeta = {
   audioRecordingMime?: string;
   /** Best-effort duration from recorder or audio element */
   audioRecordingDurationSec?: number;
+  /** String calibration blob used during this session (DEBUG_REPORT_VERSION 3+) */
+  stringProfile?: StringProfile;
 };
 
 export type DebugReport = {
-  version: 1 | typeof DEBUG_REPORT_VERSION;
+  version: 1 | 2 | typeof DEBUG_REPORT_VERSION;
   meta: DebugReportMeta;
   decisions: DebugDecision[];
 };

@@ -22,15 +22,18 @@ import {
   getStoredPlayAlongSource,
   getStoredPlaybackVolume,
   getStoredPracticeMode,
+  getStringProfileForMeta,
   setStoredDebugCapture,
   setStoredDebugSessionRecord,
   setStoredPlayAlongEnabled,
   type PlayAlongSource,
   type PracticeMode,
 } from "@/lib/calibration/storage";
+import type { StringProfile } from "@/lib/calibration/string-profile";
 import {
   applyVerdictToScore,
-  classifyTiming,
+  classifyTimingDirected,
+  lateGraceMsFromDuration,
   verdictKey,
   VERDICT_WINDOWS_MS,
   type Verdict,
@@ -48,6 +51,7 @@ import {
   scoreOnsetAgainstEvent,
   scoreBpOnsetAgainstEvent,
   classifyOnsetDebugOutcome,
+  type OnsetRecognizerTuning,
   type MonoRecognizerTrace,
   type PolyRecognizerTrace,
   type ScoreOnsetAgainstEventResult,
@@ -155,6 +159,10 @@ type Props = {
   trackId: string;
   songTitle: string;
   trackName: string;
+  /** When set after calibration gate, primes scoring ref before falling back to localStorage profile */
+  calibratedProfilePassThrough?: StringProfile | undefined;
+  /** User already passed calibration / intro gate in PracticeShell */
+  skipMobileIntro?: boolean;
 };
 
 type LastHit = {
@@ -168,6 +176,20 @@ function eventHasPendingString(ev: ChartEvent, verdicts: Map<string, Verdict>): 
   return ev.notes.some((n) => !verdicts.has(verdictKey(ev.id, n.string)));
 }
 
+/** Early tolerance (s) before `t0` — fixed. Late side adds duration-scaled grace via `lateGraceMsFromDuration`. */
+const PRACTICE_TIMING_EARLY_SEC = VERDICT_WINDOWS_MS.off / 1000;
+
+function chartEventLateWindowSec(ev: ChartEvent): number {
+  const dur = Math.max(0, ev.t1 - ev.t0);
+  return (VERDICT_WINDOWS_MS.off + lateGraceMsFromDuration(dur)) / 1000;
+}
+
+function songTimeMatchesChartEvent(songTimeSec: number, ev: ChartEvent): boolean {
+  if (songTimeSec < ev.t0 - PRACTICE_TIMING_EARLY_SEC) return false;
+  if (songTimeSec > ev.t0 + chartEventLateWindowSec(ev)) return false;
+  return true;
+}
+
 /** Map mic onset AudioContext clock → musical song seconds while transport is playing. */
 function audioCtxTimeToSongSec(tr: TransportState, audioCtxTimeSec: number): number {
   const rate = tr.playbackRate > 0 ? tr.playbackRate : 1;
@@ -178,12 +200,15 @@ function snapshotChartEvent(ev: ChartEvent): ExpectedEventSnapshot {
   return {
     id: ev.id,
     t0: ev.t0,
+    t1: ev.t1,
     kind: ev.kind,
     notes: ev.notes.map((n) => ({
       string: n.string,
       midi: n.midi,
       dead: n.dead ?? false,
+      ...(n.palmMute ? { palmMute: true } : {}),
     })),
+    ...(ev.tech?.length ? { tech: ev.tech } : {}),
   };
 }
 
@@ -250,7 +275,15 @@ function IconPause({ className }: { className?: string }) {
   );
 }
 
-export function PracticeClient({ chart, songId, trackId, songTitle, trackName }: Props) {
+export function PracticeClient({
+  chart,
+  songId,
+  trackId,
+  songTitle,
+  trackName,
+  calibratedProfilePassThrough,
+  skipMobileIntro = false,
+}: Props) {
   const router = useRouter();
   const transportRef = useRef<TransportState | null>(null);
   const verdictsRef = useRef<Map<string, Verdict>>(new Map());
@@ -273,6 +306,7 @@ export function PracticeClient({ chart, songId, trackId, songTitle, trackName }:
   >(() => Promise.resolve({ ok: false, error: "not-ready" }));
   /** For chart unmount / `pagehide` — wired to `flushDebugCaptureKeepalive` */
   const flushDebugKeepaliveRef = useRef<((reason: DebugReportFlushReason) => void) | null>(null);
+  const stringProfileRef = useRef<StringProfile | null>(null);
   const basicPitchDetectorRef = useRef<BasicPitchDetector | null>(null);
   const pitchDiagRef = useRef<DetectionMetricsSnapshot | null>(null);
   const [tick, setTick] = useState(0);
@@ -301,7 +335,7 @@ export function PracticeClient({ chart, songId, trackId, songTitle, trackName }:
   const [audioBusy, setAudioBusy] = useState(false);
 
   const [isMobile, setIsMobile] = useState(false);
-  const [started, setStarted] = useState(false);
+  const [started, setStarted] = useState(!!skipMobileIntro);
   const [portrait, setPortrait] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -333,6 +367,16 @@ export function PracticeClient({ chart, songId, trackId, songTitle, trackName }:
   const forceTick = useCallback(() => {
     setTick((value) => value + 1);
   }, []);
+
+  useEffect(() => {
+    stringProfileRef.current =
+      calibratedProfilePassThrough ??
+      getStringProfileForMeta(chart.meta.tuning, chart.meta.capoFret);
+  }, [
+    calibratedProfilePassThrough,
+    chart.meta.capoFret,
+    chart.meta.tuning,
+  ]);
 
   useEffect(() => {
     return () => {
@@ -755,6 +799,7 @@ export function PracticeClient({ chart, songId, trackId, songTitle, trackName }:
       ...(debugAudioSampleRateRef.current != null
         ? { audioSampleRate: debugAudioSampleRateRef.current }
         : {}),
+      ...(stringProfileRef.current != null ? { stringProfile: stringProfileRef.current } : {}),
     });
     const body = cap.serializeReport(report);
     cap.clear();
@@ -809,6 +854,7 @@ export function PracticeClient({ chart, songId, trackId, songTitle, trackName }:
         ...(debugAudioSampleRateRef.current != null
           ? { audioSampleRate: debugAudioSampleRateRef.current }
           : {}),
+        ...(stringProfileRef.current != null ? { stringProfile: stringProfileRef.current } : {}),
       });
       const body = cap.serializeReport(report);
       const res = await fetch("/api/debug/note-decisions", {
@@ -913,14 +959,14 @@ export function PracticeClient({ chart, songId, trackId, songTitle, trackName }:
     const tr = transportRef.current;
     if (!tr?.playing) return;
     const adjustedSongTime = getSongTime(tr) + latencyMs / 1000;
-    const winSec = VERDICT_WINDOWS_MS.off / 1000;
     const dbgOn = debugCaptureEnabledRef.current && livePlayAlongInput(source);
 
     for (const ev of chart.events) {
+      const lateWin = chartEventLateWindowSec(ev);
       const anyPendingLate = ev.notes.some((n) => {
         const key = verdictKey(ev.id, n.string);
         if (verdictsRef.current.has(key)) return false;
-        return adjustedSongTime > ev.t0 + winSec;
+        return adjustedSongTime > ev.t0 + lateWin;
       });
       if (
         anyPendingLate &&
@@ -953,7 +999,7 @@ export function PracticeClient({ chart, songId, trackId, songTitle, trackName }:
       for (const n of ev.notes) {
         const key = verdictKey(ev.id, n.string);
         if (verdictsRef.current.has(key)) continue;
-        if (adjustedSongTime <= ev.t0 + winSec) continue;
+        if (adjustedSongTime <= ev.t0 + lateWin) continue;
         void applyVerdictForString(ev.id, n.string, "miss", adjustedSongTime * 1000 - ev.t0 * 1000);
       }
     }
@@ -967,7 +1013,6 @@ export function PracticeClient({ chart, songId, trackId, songTitle, trackName }:
     let capture: AudioCaptureWorklet | null = null;
     const tuning = chart.meta.tuning;
     const capoFret = chart.meta.capoFret;
-    const winSec = VERDICT_WINDOWS_MS.off / 1000;
 
     const triggerWrongFlash = (detectedMidi: number) => {
       if (tuning.length !== 6) return;
@@ -1006,8 +1051,8 @@ export function PracticeClient({ chart, songId, trackId, songTitle, trackName }:
       const cands: { ev: ChartEvent; d: number }[] = [];
       for (const ev of chart.events) {
         if (!eventHasPendingString(ev, verdictsRef.current)) continue;
+        if (!songTimeMatchesChartEvent(songTime, ev)) continue;
         const d = Math.abs(ev.t0 - songTime);
-        if (d > winSec) continue;
         cands.push({ ev, d });
       }
       cands.sort((a, b) => a.d - b.d);
@@ -1052,6 +1097,9 @@ export function PracticeClient({ chart, songId, trackId, songTitle, trackName }:
       const useFallback = evidence.size === 0 && pdCfg.fallbackHarmonicVerifier;
 
       const tSc0 = typeof performance !== "undefined" ? performance.now() : 0;
+      const profileTuning: OnsetRecognizerTuning = {
+        stringProfile: stringProfileRef.current,
+      };
       const r = useFallback
         ? scoreOnsetAgainstEvent(
             best.ev,
@@ -1060,8 +1108,9 @@ export function PracticeClient({ chart, songId, trackId, songTitle, trackName }:
             payload.spectrum,
             payload.sampleRate,
             latencyMs,
+            profileTuning,
           )
-        : scoreBpOnsetAgainstEvent(best.ev, songTime, evidence, latencyMs);
+        : scoreBpOnsetAgainstEvent(best.ev, songTime, evidence, latencyMs, profileTuning);
       const tSc1 = typeof performance !== "undefined" ? performance.now() : 0;
 
       let appliedPitchHit = false;
@@ -1267,7 +1316,7 @@ export function PracticeClient({ chart, songId, trackId, songTitle, trackName }:
           emulateOffsetsRef.current.set(ev.id, offsetMs);
         }
         if (adjustedSongTimeMs < ev.t0 * 1000 + offsetMs) continue;
-        const v = classifyTiming(offsetMs);
+        const v = classifyTimingDirected(offsetMs, Math.max(0, ev.t1 - ev.t0));
         for (const n of ev.notes) {
           void applyVerdictForString(ev.id, n.string, v, offsetMs);
         }
@@ -1375,7 +1424,7 @@ export function PracticeClient({ chart, songId, trackId, songTitle, trackName }:
   const desktopControls = <PracticeControls {...controlsProps} showSeek desktopTwoColumn />;
   const mobileControls = <PracticeControls {...controlsProps} showSeek={false} />;
 
-  if (isMobile && !started) {
+  if (!skipMobileIntro && isMobile && !started) {
     return (
       <PracticeIntro
         songTitle={songTitle}

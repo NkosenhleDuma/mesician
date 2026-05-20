@@ -1,3 +1,6 @@
+import type { StringProfile } from "./string-profile";
+import { stringProfileKey as computeStringProfileKey } from "./string-profile";
+
 const KEY = "mesician_input_latency_ms";
 const PLAYBACK_VOL_KEY = "mesician_playback_volume";
 const PLAY_ALONG_KEY = "mesician_play_along_enabled";
@@ -12,6 +15,7 @@ const PRACTICE_MODE_KEY = "mesician_practice_mode";
 const DEBUG_CAPTURE_KEY = "mesician_debug_capture_enabled";
 
 const DEBUG_SESSION_RECORD_KEY = "mesician_debug_session_record";
+const STRING_PROFILE_KEY = "mesician_string_profile_v1";
 
 export type PlayAlongSource = "mic" | "emulate" | "file";
 export type PracticeMode = "practice" | "perform";
@@ -123,4 +127,47 @@ export function getStoredDebugSessionRecord(): boolean {
 export function setStoredDebugSessionRecord(enabled: boolean) {
   if (typeof window === "undefined") return;
   window.localStorage.setItem(DEBUG_SESSION_RECORD_KEY, enabled ? "1" : "0");
+}
+
+function isStringProfile(x: unknown): x is StringProfile {
+  if (x === null || typeof x !== "object") return false;
+  const o = x as Record<string, unknown>;
+  return (
+    o.version === 1 &&
+    typeof o.profileKey === "string" &&
+    Array.isArray(o.tuning) &&
+    o.tuning.every((t) => typeof t === "string") &&
+    (o.capoFret === null || typeof o.capoFret === "number") &&
+    typeof o.capturedAtIso === "string" &&
+    Array.isArray(o.strings)
+  );
+}
+
+/** Latest saved string calibration profile (may not match current chart tuning/capo — check profileKey). */
+export function getStoredStringProfile(): StringProfile | null {
+  if (typeof window === "undefined") return null;
+  const raw = window.localStorage.getItem(STRING_PROFILE_KEY);
+  if (raw == null) return null;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return isStringProfile(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function setStoredStringProfile(profile: StringProfile) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(STRING_PROFILE_KEY, JSON.stringify(profile));
+}
+
+/** Profile usable for scoring when keys match chart meta */
+export function getStringProfileForMeta(
+  tuning: string[],
+  capoFret: number | null | undefined,
+): StringProfile | null {
+  const p = getStoredStringProfile();
+  if (!p) return null;
+  const want = computeStringProfileKey(tuning, capoFret);
+  return p.profileKey === want ? p : null;
 }

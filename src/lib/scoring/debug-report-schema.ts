@@ -1,10 +1,29 @@
 import { z } from "zod";
 import { DEBUG_REPORT_VERSION } from "./debug-capture";
 
-export const DEBUG_REPORT_VERSIONS = [1, 2] as const;
+export const DEBUG_REPORT_VERSIONS = [1, 2, 3] as const;
 export type DebugReportVersion = (typeof DEBUG_REPORT_VERSIONS)[number];
 
 export const MAX_DEBUG_DECISIONS = 1000;
+
+const stringProfileEntrySchema = z.object({
+  gpString: z.number().int().min(1).max(6),
+  expectedMidi: z.number(),
+  detectedMidi: z.number(),
+  centsBias: z.number(),
+  rmsMedian: z.number(),
+  harmonicSupportMedian: z.number(),
+  sampleCount: z.number().int(),
+});
+
+const stringProfileSchema = z.object({
+  version: z.literal(1),
+  profileKey: z.string(),
+  tuning: z.array(z.string()),
+  capoFret: z.number().int().nullable(),
+  capturedAtIso: z.string(),
+  strings: z.array(stringProfileEntrySchema),
+});
 
 const verdictSchema = z.enum(["perfect", "slightEarly", "slightLate", "early", "late", "miss"]);
 
@@ -20,14 +39,17 @@ export const debugDecisionSchema = z.object({
     .object({
       id: z.string(),
       t0: z.number(),
+      t1: z.number().optional(),
       kind: z.string(),
       notes: z.array(
         z.object({
           string: z.number().int(),
           midi: z.number().int(),
           dead: z.boolean().optional(),
+          palmMute: z.boolean().optional(),
         }),
       ),
+      tech: z.array(z.string()).optional(),
     })
     .nullable(),
   isPoly: z.boolean().nullable(),
@@ -105,7 +127,7 @@ export const debugDecisionSchema = z.object({
 });
 
 export const debugReportBodySchema = z.object({
-  version: z.union([z.literal(1), z.literal(DEBUG_REPORT_VERSION)]),
+  version: z.union([z.literal(1), z.literal(2), z.literal(DEBUG_REPORT_VERSION)]),
   meta: z.object({
     songId: z.string().uuid(),
     trackId: z.string().uuid(),
@@ -119,6 +141,7 @@ export const debugReportBodySchema = z.object({
     audioRecordingKey: z.string().optional(),
     audioRecordingMime: z.string().optional(),
     audioRecordingDurationSec: z.number().nonnegative().optional(),
+    stringProfile: stringProfileSchema.optional(),
   }),
   decisions: z.array(debugDecisionSchema).max(MAX_DEBUG_DECISIONS),
 });

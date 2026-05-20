@@ -1,7 +1,7 @@
 mesician:
   image:
     repository: ghcr.io/nkosenhleduma/mesician
-    tag: 20260517-1333
+    tag: 20260518-1754
   # Create before install: kubectl create secret generic mesician-app-env -n mesician --from-env-file=.env.production
   # Mesician and in-cluster MinIO both read this Secret: MinIO maps S3_ACCESS_KEY / S3_SECRET_KEY to root credentials.
   # Required secret keys: DATABASE_URL, JWT_SECRET, S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY, NEXT_PUBLIC_APP_URL

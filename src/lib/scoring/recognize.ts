@@ -1,7 +1,8 @@
+import type { StringProfile } from "@/lib/calibration/string-profile";
 import type { ChartEvent } from "../chart/types";
 import { midiToFreq } from "../audio/midi-to-freq";
 import {
-  classifyTiming,
+  classifyTimingDirected,
   type NoteHit,
   type ScoreEventResult,
   type Verdict,
@@ -60,6 +61,8 @@ export type OnsetRecognizerTuning = {
   monoCentsTolerance?: number;
   polySupportThreshold?: number;
   yinCmndfMax?: number;
+  /** When profileKey matches chart meta, BP / harmonic mono use per-string bias and thresholds */
+  stringProfile?: StringProfile | null;
 };
 
 export function noteHarmonicSupport(
@@ -116,6 +119,7 @@ export function recognizePolyNotesWithTrace(
   verdict: Verdict,
   timingErrorMs: number,
   supportThreshold = POLY_SUPPORT_THRESHOLD,
+  stringProfile?: StringProfile | null,
 ): { notes: NoteHit[]; trace: PolyRecognizerTrace } {
   const norm = spectrumBandEnergySum(spectrum, sampleRate);
   const normSafe = norm > 1e-12 ? norm : 1e-12;
@@ -131,8 +135,10 @@ export function recognizePolyNotesWithTrace(
         timingErrorMs,
       };
     }
+    const entry = getStringProfileEntry(stringProfile, n.string);
+    const th = polySupportThresholdForString(entry, supportThreshold);
     const support = noteHarmonicSupport(spectrum, sampleRate, n.midi, normSafe);
-    const pitchOk = norm >= 1e-8 && support >= supportThreshold;
+    const pitchOk = norm >= 1e-8 && support >= th;
     perNote.push({
       string: n.string,
       midi: n.midi,
@@ -180,8 +186,9 @@ export function recognizeMonoNotes(
   verdict: Verdict,
   timingErrorMs: number,
   tuning?: Pick<OnsetRecognizerTuning, "monoCentsTolerance" | "yinCmndfMax">,
+  stringProfile?: StringProfile | null,
 ): MonoRecognizeResult {
-  const centsTol = tuning?.monoCentsTolerance ?? MONO_CENTS_TOLERANCE;
+  const centsTolBase = tuning?.monoCentsTolerance ?? MONO_CENTS_TOLERANCE;
   const yinMax = tuning?.yinCmndfMax ?? YIN_CMNDF_MAX;
   const sounding = ev.notes.filter((n) => !n.dead);
   const primary = sounding[0] ?? ev.notes[0];
@@ -212,7 +219,9 @@ export function recognizeMonoNotes(
     }
     centsPerNote.push({ string: n.string, midi: n.midi, cents });
     if (cmOk && y != null && cents != null) {
-      pitchOk = Math.abs(cents) <= centsTol;
+      const entry = getStringProfileEntry(stringProfile, n.string);
+      const tol = monoCentsToleranceWithProfile(centsTolBase, entry);
+      pitchOk = Math.abs(cents) <= tol;
     }
     return {
       string: n.string,
@@ -257,7 +266,8 @@ export function scoreOnsetAgainstEvent(
   const tMs = songTimeSec * 1000;
   const centerMs = ev.t0 * 1000;
   const timingErrorMs = tMs + inputLatencyMs - centerMs;
-  const verdict = classifyTiming(timingErrorMs, tuning?.timingWindows);
+  const noteDurSec = Math.max(0, ev.t1 - ev.t0);
+  const verdict = classifyTimingDirected(timingErrorMs, noteDurSec, tuning?.timingWindows);
 
   const sounding = ev.notes.filter((n) => !n.dead);
   const usePoly = sounding.length > 1;
@@ -271,6 +281,7 @@ export function scoreOnsetAgainstEvent(
       verdict,
       timingErrorMs,
       polyTh,
+      tuning?.stringProfile ?? null,
     );
     const dm = inferMidiFromSpectrum(spectrum, sampleRate);
     const hz = dm != null ? midiToFreq(dm) : null;
@@ -284,7 +295,16 @@ export function scoreOnsetAgainstEvent(
     };
   }
 
-  const mono = recognizeMonoNotes(ev, waveSnippet, spectrum, sampleRate, verdict, timingErrorMs, tuning);
+  const mono = recognizeMonoNotes(
+    ev,
+    waveSnippet,
+    spectrum,
+    sampleRate,
+    verdict,
+    timingErrorMs,
+    tuning,
+    tuning?.stringProfile ?? null,
+  );
   return {
     eventId: ev.id,
     detectedMidi: mono.detectedMidi,
@@ -301,12 +321,13 @@ export function scoreBpOnsetAgainstEvent(
   songTimeSec: number,
   evidenceMidis: Set<number>,
   inputLatencyMs: number,
-  tuning?: Pick<OnsetRecognizerTuning, "timingWindows">,
+  tuning?: OnsetRecognizerTuning,
 ): ScoreOnsetAgainstEventResult {
   const tMs = songTimeSec * 1000;
   const centerMs = ev.t0 * 1000;
   const timingErrorMs = tMs + inputLatencyMs - centerMs;
-  const verdict = classifyTiming(timingErrorMs, tuning?.timingWindows);
+  const noteDurSec = Math.max(0, ev.t1 - ev.t0);
+  const verdict = classifyTimingDirected(timingErrorMs, noteDurSec, tuning?.timingWindows);
 
   const notes = ev.notes.map((n) => {
     if (n.dead) {
@@ -318,7 +339,9 @@ export function scoreBpOnsetAgainstEvent(
         timingErrorMs,
       };
     }
-    const pitchOk = midiMatchesEvidence(n.midi, evidenceMidis);
+    const entry = getStringProfileEntry(tuning?.stringProfile ?? null, n.string);
+    const expectedAdj = expectedMidiWithStringBias(n.midi, entry);
+    const pitchOk = midiMatchesEvidence(expectedAdj, evidenceMidis);
     return {
       string: n.string,
       expectedMidi: n.midi,
@@ -368,17 +391,20 @@ export function inferPlayedStringFret(
 
 export function expectedSnapshotToChartEvent(e: ExpectedEventSnapshot): ChartEvent {
   const kind = e.kind === "chord" ? "chord" : "note";
+  const t1 = e.t1 != null && e.t1 >= e.t0 ? e.t1 : e.t0;
   return {
     id: e.id,
     t0: e.t0,
-    t1: e.t0,
+    t1,
     kind,
     notes: e.notes.map((n) => ({
       string: n.string,
       fret: 0,
       midi: n.midi,
       dead: n.dead ?? false,
+      ...(n.palmMute ? { palmMute: true } : {}),
     })),
+    ...(e.tech?.length ? { tech: e.tech } : {}),
   };
 }
 

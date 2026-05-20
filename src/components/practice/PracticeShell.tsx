@@ -1,8 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import type { ChartJson } from "@/lib/chart/types";
+import type { StringProfile } from "@/lib/calibration/string-profile";
+import { getStoredLatencyMs } from "@/lib/calibration/storage";
 import { PracticeClient } from "./PracticeClient";
+import { StringCalibrationFlow } from "./StringCalibrationFlow";
 
 export function PracticeShell({
   songId,
@@ -17,6 +20,10 @@ export function PracticeShell({
 }) {
   const [chart, setChart] = useState<ChartJson | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [phase, setPhase] = useState<"calibration" | "practice">("calibration");
+  const [calibratedProfilePassThrough, setCalibratedProfilePassThrough] = useState<
+    StringProfile | undefined
+  >(undefined);
 
   useEffect(() => {
     let cancelled = false;
@@ -38,16 +45,49 @@ export function PracticeShell({
     };
   }, [songId, trackId]);
 
+  const tuningOk = !!(chart?.meta && chart.meta.tuning.length === 6);
+
+  useLayoutEffect(() => {
+    if (!chart) return;
+    setPhase(chart.meta.tuning.length === 6 ? "calibration" : "practice");
+    setCalibratedProfilePassThrough(undefined);
+  }, [chart, songId, trackId]);
+
+  const latencyMsForCalibration = useMemo(() => getStoredLatencyMs(), [songId, trackId, chart]);
+
+  const onCalibrationFinished = useCallback(
+    (result: { savedProfile: StringProfile | null; skippedCalibration: boolean }) => {
+      setCalibratedProfilePassThrough(result.savedProfile ?? undefined);
+      setPhase("practice");
+    },
+    [],
+  );
+
   if (err) return <p className="text-red-400">{err}</p>;
   if (!chart) return <p className="text-zinc-400">Loading chart…</p>;
 
   return (
-    <PracticeClient
-      chart={chart}
-      songId={songId}
-      trackId={trackId}
-      songTitle={songTitle}
-      trackName={trackName}
-    />
+    <>
+      {phase === "calibration" && tuningOk && (
+        <StringCalibrationFlow
+          sourceChart={chart}
+          songTitle={songTitle}
+          trackName={trackName}
+          latencyMs={latencyMsForCalibration}
+          onFinished={onCalibrationFinished}
+        />
+      )}
+      {phase === "practice" && (
+        <PracticeClient
+          chart={chart}
+          songId={songId}
+          trackId={trackId}
+          songTitle={songTitle}
+          trackName={trackName}
+          calibratedProfilePassThrough={calibratedProfilePassThrough}
+          skipMobileIntro
+        />
+      )}
+    </>
   );
 }

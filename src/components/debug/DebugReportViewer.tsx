@@ -10,8 +10,19 @@ import {
   evidenceMidiMatchesExpected,
   type OnsetRecognizerTuning,
 } from "@/lib/scoring/recognize";
-import { playFloatSnippet, playMidiPreview } from "@/lib/audio/debug-note-preview";
-import { VERDICT_WINDOWS_MS } from "@/lib/scoring/engine";
+import {
+  playFloatSnippet,
+  playGuitarChartEventPreview,
+  chartEventFromExpectedSnapshot,
+  chartEventForDetectedMidis,
+  previewDurationFromExpectedSnapshot,
+  DEBUG_PREVIEW_FALLBACK_DURATION_SEC,
+} from "@/lib/audio/debug-note-preview";
+import {
+  VERDICT_WINDOWS_MS,
+  LATE_TIMING_GRACE_MS_MAX,
+  LATE_TIMING_GRACE_MS_PER_NOTE_S,
+} from "@/lib/scoring/engine";
 import {
   isReplayableDecision,
   REPLAY_SAMPLE_RATE_FALLBACK,
@@ -93,8 +104,11 @@ export function DebugReportViewer({ songId, trackId, songTitle, trackName, initi
       monoCentsTolerance: monoCents,
       polySupportThreshold: polySupport,
       yinCmndfMax: yinCmndf,
+      ...(report?.meta.stringProfile != null
+        ? { stringProfile: report.meta.stringProfile }
+        : {}),
     }),
-    [winPerfect, winSlight, winOff, monoCents, polySupport, yinCmndf],
+    [winPerfect, winSlight, winOff, monoCents, polySupport, yinCmndf, report?.meta.stringProfile],
   );
 
   const listItems = useMemo(() => {
@@ -277,7 +291,53 @@ export function DebugReportViewer({ songId, trackId, songTitle, trackName, initi
             <p className="mt-2 text-zinc-500">
               Replay differs on {replayStats.diff} / {replayStats.total} onset rows (tuning sliders below).
             </p>
+            <p className="mt-2 text-xs text-zinc-500">
+              Timing uses the same classifier as practice: the early miss bound stays within the &quot;off&quot;
+              window before <code className="text-zinc-400">t0</code>; the late miss bound adds up to{" "}
+              {LATE_TIMING_GRACE_MS_MAX} ms extra ({LATE_TIMING_GRACE_MS_PER_NOTE_S} ms per second of chart note
+              length, capped). Reports without <code className="text-zinc-400">expectedEvent.t1</code> treat note
+              length as zero for replay grace.
+            </p>
           </div>
+
+          {report.meta.stringProfile ? (
+            <div className="rounded-lg border border-emerald-900/50 bg-emerald-950/20 p-4 text-sm space-y-2">
+              <h2 className="text-sm font-medium text-emerald-100">
+                String profile (replay uses this bias + thresholds)
+              </h2>
+              <p className="text-xs text-emerald-200/70">
+                Key <code className="text-emerald-100">{report.meta.stringProfile.profileKey}</code> · capo{" "}
+                {report.meta.stringProfile.capoFret ?? "none"} · profile{" "}
+                {report.meta.stringProfile.capturedAtIso}
+              </p>
+              <div className="overflow-x-auto rounded border border-emerald-900/40">
+                <table className="w-full text-left text-xs text-zinc-300">
+                  <thead className="text-zinc-500 border-b border-emerald-900/40">
+                    <tr>
+                      <th className="py-2 px-2">Str</th>
+                      <th className="py-2 px-2">MIDI exp</th>
+                      <th className="py-2 px-2">cents Δ</th>
+                      <th className="py-2 px-2">hpoly support</th>
+                      <th className="py-2 px-2">n</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[...report.meta.stringProfile.strings]
+                      .sort((a, b) => a.gpString - b.gpString)
+                      .map((s) => (
+                        <tr key={s.gpString} className="border-t border-emerald-900/20">
+                          <td className="py-1 px-2 font-mono">{s.gpString}</td>
+                          <td className="py-1 px-2 font-mono">{s.expectedMidi}</td>
+                          <td className="py-1 px-2">{s.centsBias.toFixed(1)}</td>
+                          <td className="py-1 px-2">{s.harmonicSupportMedian.toFixed(3)}</td>
+                          <td className="py-1 px-2">{s.sampleCount}</td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ) : null}
 
           {report.meta.audioRecordingKey ? (
             <div className="rounded-lg border border-zinc-800 bg-zinc-900/40 p-4 space-y-2">
@@ -464,7 +524,11 @@ function DecisionCard({
           type="button"
           className="rounded-md bg-zinc-800 px-2 py-1 text-[11px] text-zinc-200 hover:bg-zinc-700 disabled:opacity-40"
           disabled={expectedMidisNonDead(d.expectedEvent).length === 0}
-          onClick={() => void playMidiPreview(expectedMidisNonDead(d.expectedEvent))}
+          onClick={() => {
+            if (!d.expectedEvent) return;
+            const ev = chartEventFromExpectedSnapshot(d.expectedEvent);
+            void playGuitarChartEventPreview(ev);
+          }}
         >
           Play expected
         </button>
@@ -472,7 +536,16 @@ function DecisionCard({
           type="button"
           className="rounded-md bg-zinc-800 px-2 py-1 text-[11px] text-zinc-200 hover:bg-zinc-700 disabled:opacity-40"
           disabled={detectedMidisForPreview(d).length === 0}
-          onClick={() => void playMidiPreview(detectedMidisForPreview(d))}
+          onClick={() => {
+            const midis = detectedMidisForPreview(d);
+            if (midis.length === 0) return;
+            const dur =
+              d.expectedEvent != null
+                ? previewDurationFromExpectedSnapshot(d.expectedEvent)
+                : DEBUG_PREVIEW_FALLBACK_DURATION_SEC;
+            const ev = chartEventForDetectedMidis(midis, dur);
+            void playGuitarChartEventPreview(ev);
+          }}
         >
           Play detected
         </button>
@@ -481,7 +554,12 @@ function DecisionCard({
           className="rounded-md bg-zinc-800 px-2 py-1 text-[11px] text-zinc-200 hover:bg-zinc-700 disabled:opacity-40"
           disabled={d.waveSnippet.length === 0}
           onClick={() =>
-            void playFloatSnippet(d.waveSnippet, meta.audioSampleRate ?? REPLAY_SAMPLE_RATE_FALLBACK)
+            void playFloatSnippet(
+              d.waveSnippet,
+              meta.audioSampleRate ?? REPLAY_SAMPLE_RATE_FALLBACK,
+              0.22,
+              d.expectedEvent ? previewDurationFromExpectedSnapshot(d.expectedEvent) : undefined,
+            )
           }
         >
           Play snippet
@@ -505,7 +583,13 @@ function DecisionCard({
           <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-zinc-500">Expected</div>
           {d.expectedEvent ? (
             <div className="space-y-1 font-mono text-xs text-zinc-300">
-              <div>t0={d.expectedEvent.t0.toFixed(3)}s · {d.expectedEvent.kind}</div>
+              <div>
+                t0={d.expectedEvent.t0.toFixed(3)}s
+                {d.expectedEvent.t1 != null && d.expectedEvent.t1 > d.expectedEvent.t0
+                  ? ` · t1=${d.expectedEvent.t1.toFixed(3)}s`
+                  : ""}{" "}
+                · {d.expectedEvent.kind}
+              </div>
               <table className="w-full border-collapse text-left">
                 <thead>
                   <tr className="text-zinc-500">

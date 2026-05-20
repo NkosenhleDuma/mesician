@@ -4,6 +4,28 @@ import type { TransportState } from "./transport";
 /** GM-style name from smplr / gleitz MIDI.js soundfonts — steel acoustic reads well for tab playback. */
 export const GUITAR_SOUNDFONT_NAME = "acoustic_guitar_steel" as const;
 
+/**
+ * One-off soundfont for debug / standalone preview (no transport). Fails soft → caller uses triangle/sine fallback.
+ */
+export async function loadGuitarSoundfontForPreview(
+  ctx: AudioContext,
+  destination: AudioNode,
+): Promise<Soundfont | undefined> {
+  try {
+    const sf = new Soundfont(ctx, {
+      instrument: GUITAR_SOUNDFONT_NAME,
+      kit: "MusyngKite",
+      destination,
+      volume: 78,
+      extraGain: 0.22,
+    });
+    await sf.load;
+    return sf;
+  } catch {
+    return undefined;
+  }
+}
+
 async function loadGuitarOnce(transport: TransportState): Promise<Soundfont | undefined> {
   if (transport.guitar) return transport.guitar;
   try {
