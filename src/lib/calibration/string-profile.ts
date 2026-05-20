@@ -1,4 +1,5 @@
-import { hzToMidi, midiToFreq } from "@/lib/scoring/pitch";
+import { midiToFreq } from "@/lib/audio/midi-to-freq";
+import { hzToMidi } from "@/lib/scoring/pitch";
 
 export type StringProfileEntry = {
   gpString: number;

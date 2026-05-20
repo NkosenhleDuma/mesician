@@ -53,7 +53,7 @@ export function PracticeShell({
     setCalibratedProfilePassThrough(undefined);
   }, [chart, songId, trackId]);
 
-  const latencyMsForCalibration = useMemo(() => getStoredLatencyMs(), [songId, trackId, chart]);
+  const latencyMsForCalibration = useMemo(() => getStoredLatencyMs(), []);
 
   const onCalibrationFinished = useCallback(
     (result: { savedProfile: StringProfile | null; skippedCalibration: boolean }) => {

@@ -334,7 +334,7 @@ export function StringCalibrationFlow({
     } finally {
       setBusy(false);
     }
-  }, [calibrationChart.events, latencyMs, requestMic]);
+  }, [calibrationChart, latencyMs, requestMic]);
 
   const onStartCalibration = useCallback(async () => {
     const tr = transportRef.current;
@@ -372,6 +372,7 @@ export function StringCalibrationFlow({
   }, []);
 
   const doneCount = useMemo(() => {
+    void tick;
     let count = 0;
     for (const ev of calibrationChart.events) {
       for (const nt of ev.notes) {
@@ -407,7 +408,7 @@ export function StringCalibrationFlow({
       savedProfile,
       skippedCalibration: skippedFlag,
     });
-  }, [calibrationChart.events, skippedFlag, onFinished]);
+  }, [calibrationChart, skippedFlag, onFinished]);
 
   const header = (
     <div className="space-y-1 shrink-0">

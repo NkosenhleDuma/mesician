@@ -8,7 +8,8 @@ import {
   inferMidiFromSpectrum,
   spectrumBandEnergySum,
 } from "@/lib/scoring/spectrum";
-import { hzToMidi, midiToFreq } from "@/lib/scoring/pitch";
+import { midiToFreq } from "@/lib/audio/midi-to-freq";
+import { hzToMidi } from "@/lib/scoring/pitch";
 import { yinAroundExpected } from "@/lib/scoring/yin";
 
 const SEMI_TOL = 0.55;
