@@ -1,4 +1,5 @@
 import type { Soundfont } from "smplr";
+import { PLAYBACK_OUTPUT_GAIN_MULTIPLIER } from "@/components/practice/practice-constants";
 import type { ChartJson } from "../chart/types";
 import { resolveGuitarInstrument } from "./guitar-instrument";
 import { scheduleChart } from "./synth-scheduler";
@@ -8,7 +9,7 @@ export type TransportState = {
   chart: ChartJson;
   /** Shared output bus for Soundfont + fallback synth. */
   outputGain: GainNode;
-  /** Linear gain applied to `outputGain` (typical range 0–2). */
+  /** Slider value 0–2; `outputGain` uses playbackVolume × PLAYBACK_OUTPUT_GAIN_MULTIPLIER. */
   playbackVolume: number;
   guitar: Soundfont | undefined;
   guitarLoadPromise: Promise<Soundfont | undefined> | undefined;
@@ -44,7 +45,7 @@ export function createTransport(chart: ChartJson, opts?: CreateTransportOptions)
   const ctx = new AudioCtor();
   const outputGain = ctx.createGain();
   const playbackVolume = clampPlaybackVolume(opts?.playbackVolume ?? 1);
-  outputGain.gain.value = playbackVolume;
+  outputGain.gain.value = applyPlaybackGain(playbackVolume);
   outputGain.connect(ctx.destination);
   return {
     ctx,
@@ -63,16 +64,21 @@ export function createTransport(chart: ChartJson, opts?: CreateTransportOptions)
   };
 }
 
+/** Clamps the slider/normalized gain (0–2), not the effective output level. */
 function clampPlaybackVolume(v: number): number {
   const x = Number.isFinite(v) ? v : 1;
   return Math.min(2, Math.max(0, x));
+}
+
+function applyPlaybackGain(slider: number): number {
+  return clampPlaybackVolume(slider) * PLAYBACK_OUTPUT_GAIN_MULTIPLIER;
 }
 
 /** Update master playback loudness; applies immediately (including during play). */
 export function setPlaybackVolume(transport: TransportState, volume: number): void {
   const v = clampPlaybackVolume(volume);
   transport.playbackVolume = v;
-  transport.outputGain.gain.value = v;
+  transport.outputGain.gain.value = applyPlaybackGain(v);
 }
 
 function stopAll(transport: TransportState) {

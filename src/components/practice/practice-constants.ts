@@ -6,6 +6,9 @@ export const PLAYBACK_VOL_MIN = 0;
 export const PLAYBACK_VOL_MAX = 2;
 export const PLAYBACK_VOL_STEP = 0.05;
 
+/** Applied at master outputGain: effective = playbackVolume × this (0.8 → 4.0). */
+export const PLAYBACK_OUTPUT_GAIN_MULTIPLIER = 5;
+
 export const EMULATE_DELAY_MIN = -200;
 export const EMULATE_DELAY_MAX = 200;
 export const EMULATE_JITTER_MIN = 0;

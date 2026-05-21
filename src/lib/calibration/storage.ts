@@ -8,7 +8,7 @@ const PLAY_ALONG_SOURCE_KEY = "mesician_play_along_source";
 const EMULATE_DELAY_KEY = "mesician_emulate_delay_ms";
 const EMULATE_JITTER_KEY = "mesician_emulate_jitter_ms";
 
-/** Linear output gain (0–2); UI shows as percent (0.8 → 80%). */
+/** Slider gain (0–2); UI shows as percent. Effective output = value × 5 (0.8 → 4.0). */
 const DEFAULT_PLAYBACK_VOLUME = 0.8;
 const DEFAULT_PLAY_ALONG_SOURCE = "mic";
 const PRACTICE_MODE_KEY = "mesician_practice_mode";
