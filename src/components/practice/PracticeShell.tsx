@@ -1,9 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useState } from "react";
 import type { ChartJson } from "@/lib/chart/types";
 import type { StringProfile } from "@/lib/calibration/string-profile";
-import { getStoredLatencyMs } from "@/lib/calibration/storage";
 import { PracticeClient } from "./PracticeClient";
 import { StringCalibrationFlow } from "./StringCalibrationFlow";
 
@@ -53,8 +52,6 @@ export function PracticeShell({
     setCalibratedProfilePassThrough(undefined);
   }, [chart, songId, trackId]);
 
-  const latencyMsForCalibration = useMemo(() => getStoredLatencyMs(), []);
-
   const onCalibrationFinished = useCallback(
     (result: { savedProfile: StringProfile | null; skippedCalibration: boolean }) => {
       setCalibratedProfilePassThrough(result.savedProfile ?? undefined);
@@ -73,7 +70,6 @@ export function PracticeShell({
           sourceChart={chart}
           songTitle={songTitle}
           trackName={trackName}
-          latencyMs={latencyMsForCalibration}
           onFinished={onCalibrationFinished}
         />
       )}

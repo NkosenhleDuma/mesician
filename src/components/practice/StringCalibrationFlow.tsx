@@ -18,14 +18,7 @@ import {
 } from "@/lib/calibration/string-profile";
 import { verifyCalibrationPitch } from "@/lib/calibration/verify-calibration-pitch";
 import { setStoredStringProfile } from "@/lib/calibration/storage";
-import {
-  createTransport,
-  getSongTime,
-  pause,
-  play,
-  seek,
-  type TransportState,
-} from "@/lib/audio/transport";
+import { createTransport, getSongTime, pause, seek, type TransportState } from "@/lib/audio/transport";
 import { AudioCaptureWorklet, type OnsetPayload } from "@/lib/audio/audio-capture-worklet";
 import { BasicPitchDetector } from "@/lib/detection/basic-pitch-detector";
 import { HighwayCanvas, type TimingFlashPayload } from "./HighwayCanvas";
@@ -42,7 +35,6 @@ const MIC_CONSTRAINTS: MediaStreamConstraints = {
 
 const MOBILE_MAX_W_PX = 767;
 const MOBILE_BOTTOM_STRIP_PX = 36;
-const CAL_PAIR_SEC = 0.45;
 
 function getErrName(err: unknown): string | null {
   if (err && typeof err === "object" && "name" in err) {
@@ -66,16 +58,10 @@ function describeMicError(err: unknown): string {
   return "Mic unavailable.";
 }
 
-function audioCtxTimeToSongSec(tr: TransportState, audioCtxTimeSec: number): number {
-  const rate = tr.playbackRate > 0 ? tr.playbackRate : 1;
-  return tr.playSongStart + (audioCtxTimeSec - tr.playAudioStart) * rate;
-}
-
 type Props = {
   sourceChart: ChartJson;
   songTitle: string;
   trackName: string;
-  latencyMs: number;
   onFinished: (result: { savedProfile: StringProfile | null; skippedCalibration: boolean }) => void;
 };
 
@@ -83,7 +69,6 @@ export function StringCalibrationFlow({
   sourceChart,
   songTitle,
   trackName,
-  latencyMs,
   onFinished,
 }: Props) {
   const calibrationChart = useMemo(
@@ -98,7 +83,7 @@ export function StringCalibrationFlow({
   const basicPitchRef = useRef<BasicPitchDetector | null>(null);
   const captureDisconnectRef = useRef<(() => void) | null>(null);
 
-  const loopTimerRef = useRef(0);
+  const currentStepRef = useRef(0);
 
   const timingFlashRef = useRef<TimingFlashPayload | null>(null);
   const timingFlashStartedMsRef = useRef(0);
@@ -107,6 +92,7 @@ export function StringCalibrationFlow({
   const [started, setStarted] = useState(false);
   const [micError, setMicError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [currentStep, setCurrentStep] = useState(0);
   const [showProceed, setShowProceed] = useState(false);
   const [skippedFlag, setSkippedFlag] = useState(false);
 
@@ -139,6 +125,8 @@ export function StringCalibrationFlow({
 
   const resetVerdictState = useCallback(() => {
     verdictsRef.current.clear();
+    currentStepRef.current = 0;
+    setCurrentStep(0);
     profileRef.current = blankStringProfile({
       tuning: [...meta.tuning],
       capoFret: meta.capoFret ?? null,
@@ -156,8 +144,6 @@ export function StringCalibrationFlow({
       capturedAtIso: new Date().toISOString(),
     });
     return () => {
-      window.clearInterval(loopTimerRef.current);
-      loopTimerRef.current = 0;
       pause(t);
       micStreamRef.current?.getTracks().forEach((tr) => tr.stop());
       micStreamRef.current = null;
@@ -169,29 +155,6 @@ export function StringCalibrationFlow({
       transportRef.current = null;
     };
   }, [calibrationChart, meta.capoFret, meta.tuning]);
-
-  useEffect(() => {
-    window.clearInterval(loopTimerRef.current);
-    if (!started) return;
-    loopTimerRef.current = window.setInterval(() => {
-      const tr = transportRef.current;
-      if (!tr?.playing || !(calibrationChart.duration > 0)) return;
-      const st = getSongTime(tr);
-      if (st >= calibrationChart.duration - 0.02) {
-        pause(tr);
-        seek(tr, 0);
-        void play(tr).catch(() => {});
-      }
-      setTick((x) => x + 1);
-    }, 120);
-    return () => window.clearInterval(loopTimerRef.current);
-  }, [started, calibrationChart.duration]);
-
-  useEffect(() => {
-    const tr = transportRef.current;
-    if (!tr?.playing || !started) return;
-    if (portrait) pause(tr);
-  }, [portrait, started]);
 
   useEffect(() => {
     document.body.classList.add("mobile-no-scroll");
@@ -258,23 +221,16 @@ export function StringCalibrationFlow({
 
       const onPayload = (payload: OnsetPayload) => {
         const trInner = transportRef.current;
-        if (!trInner?.playing) return;
-        const songMs = audioCtxTimeToSongSec(trInner, payload.audioContextTime) * 1000 + latencyMs;
+        if (!trInner) return;
 
-        const pending = calibrationChart.events.filter((ev) =>
-          ev.notes.some((n) => !verdictsRef.current.has(verdictKey(ev.id, n.string))),
-        );
-        let bestEv: (typeof calibrationChart.events)[number] | null = null;
-        let bestD = Infinity;
-        for (const ev of pending) {
-          const dMs = Math.abs(songMs - ev.t0 * 1000);
-          if (dMs <= CAL_PAIR_SEC * 1000 && dMs < bestD) {
-            bestD = dMs;
-            bestEv = ev;
-          }
-        }
+        const events = calibrationChart.events;
+        const stepIdx = currentStepRef.current;
+        const bestEv = events[stepIdx];
         if (!bestEv || bestEv.notes.length !== 1) return;
+
         const n = bestEv.notes[0]!;
+        if (verdictsRef.current.has(verdictKey(bestEv.id, n.string))) return;
+
         const onsetCtxMs = payload.audioContextTime * 1000;
         const evidence = basicPitchRef.current?.midisEvidenceAt(onsetCtxMs) ?? new Set<number>();
         const v = verifyCalibrationPitch(
@@ -308,25 +264,37 @@ export function StringCalibrationFlow({
         const doneNow = calibrationChart.events.every((ev) =>
           ev.notes.every((nn) => verdictsRef.current.has(verdictKey(ev.id, nn.string))),
         );
-        setTick((x) => x + 1);
         if (doneNow && profileRef.current) {
           pause(trInner);
           setStoredStringProfile(profileRef.current);
           setSkippedFlag(false);
           setShowProceed(true);
+        } else {
+          const next = stepIdx + 1;
+          currentStepRef.current = next;
+          setCurrentStep(next);
+          pause(trInner);
+          if (events[next]) seek(trInner, events[next].t0);
         }
+        setTick((x) => x + 1);
       };
 
       capture.setOnsetHandler(onPayload);
       await capture.connect(stream);
+
       const det = new BasicPitchDetector(tr.ctx);
       basicPitchRef.current = det;
       det.attachCapture(capture);
-      await det.init().catch(() => {});
-      det.start();
+
       captureDisconnectRef.current = () => {
         capture.disconnect();
       };
+
+      setBusy(false);
+
+      det.start();
+      void det.init().catch(() => {});
+
       return true;
     } catch (e) {
       setMicError(describeMicError(e));
@@ -334,7 +302,7 @@ export function StringCalibrationFlow({
     } finally {
       setBusy(false);
     }
-  }, [calibrationChart, latencyMs, requestMic]);
+  }, [calibrationChart, requestMic]);
 
   const onStartCalibration = useCallback(async () => {
     const tr = transportRef.current;
@@ -344,25 +312,33 @@ export function StringCalibrationFlow({
     if (!micOk) return;
     try {
       await tr.ctx.resume();
-      seek(tr, 0);
-      await play(tr);
+      pause(tr);
+      currentStepRef.current = 0;
+      setCurrentStep(0);
+      const first = calibrationChart.events[0];
+      if (first) seek(tr, first.t0);
       setStarted(true);
+      setTick((x) => x + 1);
     } catch {
       /* ignore */
     }
-  }, [beginCalibrationCapture, resetVerdictState]);
+  }, [beginCalibrationCapture, calibrationChart.events, resetVerdictState]);
 
   const onRestartCalibration = useCallback(async () => {
     const tr = transportRef.current;
     if (!tr) return;
     pause(tr);
-    seek(tr, 0);
     resetVerdictState();
     const micOk = await beginCalibrationCapture();
     if (!micOk) return;
     await tr.ctx.resume();
-    await play(tr);
-  }, [beginCalibrationCapture, resetVerdictState]);
+    pause(tr);
+    currentStepRef.current = 0;
+    setCurrentStep(0);
+    const first = calibrationChart.events[0];
+    if (first) seek(tr, first.t0);
+    setTick((x) => x + 1);
+  }, [beginCalibrationCapture, calibrationChart.events, resetVerdictState]);
 
   const onSkip = useCallback(() => {
     const tr = transportRef.current;
@@ -410,6 +386,11 @@ export function StringCalibrationFlow({
     });
   }, [calibrationChart, skippedFlag, onFinished]);
 
+  const activeEv = calibrationChart.events[currentStep];
+  const gpString = activeEv?.notes[0]?.string;
+  const expectPitchLabel =
+    gpString != null && meta.tuning.length === 6 ? meta.tuning[6 - gpString] : undefined;
+
   const header = (
     <div className="space-y-1 shrink-0">
       <p className="text-xs uppercase tracking-wide text-zinc-500">String calibration</p>
@@ -430,7 +411,22 @@ export function StringCalibrationFlow({
         </div>
       </dl>
       <p className="text-sm text-zinc-400 mt-2">
-        Pluck each open string as its note crosses the pink line ({doneCount}/6 detected).
+        {started && expectPitchLabel != null ? (
+          <>
+            Pluck the open{" "}
+            <span className="font-mono text-emerald-200">{expectPitchLabel}</span>
+            {" — "}
+            <span className="text-zinc-300">
+              Guitar string {gpString} ({currentStep + 1}/6).
+            </span>{" "}
+            It turns green when detected; highway jumps to the next string ({doneCount}/6 done).
+          </>
+        ) : (
+          <>
+            After you grant the mic we expect one open string at a time; detected strings turn green
+            ({doneCount}/6).
+          </>
+        )}
       </p>
       {micError ? <p className="text-sm text-amber-400 mt-2">{micError}</p> : null}
     </div>
@@ -492,7 +488,7 @@ export function StringCalibrationFlow({
             <div className="absolute inset-0 z-50 flex flex-col items-center justify-center gap-4 bg-zinc-950/95 p-6 text-center">
               <p className="text-lg font-medium text-white">Rotate to landscape for calibration</p>
               <p className="text-sm text-zinc-400 max-w-xs">
-                Scrolling cues are paused in portrait.
+                The fretboard step-by-step cues use the wide layout more clearly.
               </p>
             </div>
           )}

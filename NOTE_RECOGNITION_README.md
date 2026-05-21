@@ -54,7 +54,7 @@ flowchart TD
 | [`src/lib/scoring/engine.ts`](src/lib/scoring/engine.ts) | Verdict math (`VERDICT_WINDOWS_MS`, `classifyTiming`, `classifyTimingDirected` + `lateGraceMsFromDuration`, `applyVerdictToScore`, types). |
 | [`src/components/practice/PracticeClient.tsx`](src/components/practice/PracticeClient.tsx) | Pairs onsets to nearest pending event; applies hits; passes `OnsetRecognizerTuning` with **`stringProfile`** from storage or post-gate snapshot; maps AudioContext time → song time while playing. |
 | [`src/components/practice/PracticeShell.tsx`](src/components/practice/PracticeShell.tsx) | Loads chart; **gates practice** behind open-string calibration when `meta.tuning` has six strings; passes calibrated profile snapshot into `PracticeClient`. |
-| [`src/components/practice/StringCalibrationFlow.tsx`](src/components/practice/StringCalibrationFlow.tsx) | Scrolls synthetic open-string arpegio ([`buildOpenStringCalibrationChart`](src/lib/calibration/build-calibration-chart.ts)); mic + Basic Pitch + [`verifyCalibrationPitch`](src/lib/calibration/verify-calibration-pitch.ts); merges [`StringProfile`](src/lib/calibration/string-profile.ts) to `localStorage`. |
+| [`src/components/practice/StringCalibrationFlow.tsx`](src/components/practice/StringCalibrationFlow.tsx) | Paused synthetic open-string chart ([`buildOpenStringCalibrationChart`](src/lib/calibration/build-calibration-chart.ts)) — expects one open string at a time; advances on verified pluck via mic + optional Basic Pitch + [`verifyCalibrationPitch`](src/lib/calibration/verify-calibration-pitch.ts); merges [`StringProfile`](src/lib/calibration/string-profile.ts) to `localStorage`. |
 | [`src/components/practice/PracticeControls.tsx`](src/components/practice/PracticeControls.tsx) | Shows optional wrong-note hint line next to last hit. |
 
 ## Worklet ↔ main message contract
@@ -95,7 +95,7 @@ The separate interval-driven **miss timer** (still in `PracticeClient`) fires wh
 
 ### String calibration (before practice)
 
-Tracks with **`meta.tuning` length six** enter [`StringCalibrationFlow`](src/components/practice/StringCalibrationFlow.tsx) once per visit (after [`PracticeShell`](src/components/practice/PracticeShell.tsx) loads the chart). The UI scrolls a **synthetic six-note open-string arpeggio** (capo-aware sounding MIDIs via [`chartNoteMidi`](src/lib/chart/note-midi.ts)). Transport volume is zero (visual cues only); the player plucks each string as notes cross the highway playhead.
+Tracks with **`meta.tuning` length six** enter [`StringCalibrationFlow`](src/components/practice/StringCalibrationFlow.tsx) once per visit (after [`PracticeShell`](src/components/practice/PracticeShell.tsx) loads the chart). The UI shows the same six open-string cues (capo-aware sounding MIDIs via [`chartNoteMidi`](src/lib/chart/note-midi.ts)) with the **timeline paused**. The highway is **parked** on each note in sequence; transport volume stays zero (visual only). Each time the detector accepts a **correct pluck**, the cue turns green and the view **seeks** to the next expected string (no autoplay scrolling). Basic Pitch WASM loads asynchronously after mic + worklet connect so onboarding is not blocked.
 
 - Successfully detected notes merge samples into [`StringProfile`](src/lib/calibration/string-profile.ts), persisted under `mesician_string_profile_v1` in [`storage.ts`](src/lib/calibration/storage.ts); key = tuning + capo fret.
 - **Skip for now** still opens practice; scoring falls back until a profile matches the chart meta.

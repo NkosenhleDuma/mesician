@@ -47,4 +47,6 @@ resource "helm_release" "mesician_helm_release" {
   depends_on = [
     kubernetes_namespace.mesician_namespace
   ]
+
+  timeout = 600
 }
