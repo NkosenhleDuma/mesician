@@ -48,5 +48,5 @@ resource "helm_release" "mesician_helm_release" {
     kubernetes_namespace.mesician_namespace
   ]
 
-  timeout = 600
+  timeout = 1800
 }

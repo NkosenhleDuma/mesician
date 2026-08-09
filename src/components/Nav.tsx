@@ -11,6 +11,9 @@ export async function Nav() {
           Mesician
         </Link>
         <nav className="flex items-center gap-4 text-sm">
+          <Link href="/tuner" className="text-zinc-300 hover:text-white">
+            Tuner
+          </Link>
           {session ? (
             <>
               <Link href="/library" className="text-zinc-300 hover:text-white">
