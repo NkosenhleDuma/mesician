@@ -19,10 +19,19 @@ import {
 import { verifyCalibrationPitch } from "@/lib/calibration/verify-calibration-pitch";
 import { setStoredStringProfile } from "@/lib/calibration/storage";
 import { createTransport, getSongTime, pause, seek, type TransportState } from "@/lib/audio/transport";
-import { AudioCaptureWorklet, type OnsetPayload } from "@/lib/audio/audio-capture-worklet";
+import {
+  AudioCaptureWorklet,
+  DEFAULT_PREAMP_GAIN,
+  type OnsetPayload,
+} from "@/lib/audio/audio-capture-worklet";
 import { BasicPitchDetector } from "@/lib/detection/basic-pitch-detector";
 import { HighwayCanvas, type TimingFlashPayload } from "./HighwayCanvas";
 import { CalibrationProceedModal } from "./CalibrationProceedModal";
+import {
+  CalibrationDebugPanel,
+  type CalibrationDebugSnapshot,
+  type CalibrationOnsetDebugInfo,
+} from "./CalibrationDebugPanel";
 
 const MIC_CONSTRAINTS: MediaStreamConstraints = {
   audio: {
@@ -95,6 +104,52 @@ export function StringCalibrationFlow({
   const [currentStep, setCurrentStep] = useState(0);
   const [showProceed, setShowProceed] = useState(false);
   const [skippedFlag, setSkippedFlag] = useState(false);
+  const [debugEnabled, setDebugEnabled] = useState(false);
+  const [debugSnapshot, setDebugSnapshot] = useState<CalibrationDebugSnapshot>({
+    onsetCount: 0,
+    lastOnset: null,
+  });
+
+  const debugEnabledRef = useRef(false);
+  const debugOnsetCountRef = useRef(0);
+  const pendingDebugRef = useRef<CalibrationOnsetDebugInfo | null>(null);
+  const debugFlushTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    debugEnabledRef.current = debugEnabled;
+  }, [debugEnabled]);
+
+  const flushDebugSnapshot = useCallback(() => {
+    debugFlushTimerRef.current = null;
+    setDebugSnapshot({
+      onsetCount: debugOnsetCountRef.current,
+      lastOnset: pendingDebugRef.current,
+    });
+  }, []);
+
+  const scheduleDebugFlush = useCallback(() => {
+    if (debugFlushTimerRef.current != null) return;
+    debugFlushTimerRef.current = window.setTimeout(flushDebugSnapshot, 100);
+  }, [flushDebugSnapshot]);
+
+  const recordDebugOnset = useCallback(
+    (info: CalibrationOnsetDebugInfo) => {
+      debugOnsetCountRef.current += 1;
+      pendingDebugRef.current = info;
+      scheduleDebugFlush();
+    },
+    [scheduleDebugFlush],
+  );
+
+  const resetDebugSnapshot = useCallback(() => {
+    if (debugFlushTimerRef.current != null) {
+      window.clearTimeout(debugFlushTimerRef.current);
+      debugFlushTimerRef.current = null;
+    }
+    debugOnsetCountRef.current = 0;
+    pendingDebugRef.current = null;
+    setDebugSnapshot({ onsetCount: 0, lastOnset: null });
+  }, []);
 
   const mainRef = useRef<HTMLDivElement>(null);
   const [highwayMobileH, setHighwayMobileH] = useState(360);
@@ -132,8 +187,9 @@ export function StringCalibrationFlow({
       capoFret: meta.capoFret ?? null,
       capturedAtIso: new Date().toISOString(),
     });
+    resetDebugSnapshot();
     setTick((x) => x + 1);
-  }, [meta.capoFret, meta.tuning]);
+  }, [meta.capoFret, meta.tuning, resetDebugSnapshot]);
 
   useEffect(() => {
     const t = createTransport(calibrationChart, { playbackVolume: 0 });
@@ -159,6 +215,14 @@ export function StringCalibrationFlow({
   useEffect(() => {
     document.body.classList.add("mobile-no-scroll");
     return () => document.body.classList.remove("mobile-no-scroll");
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (debugFlushTimerRef.current != null) {
+        window.clearTimeout(debugFlushTimerRef.current);
+      }
+    };
   }, []);
 
   useLayoutEffect(() => {
@@ -226,10 +290,60 @@ export function StringCalibrationFlow({
         const events = calibrationChart.events;
         const stepIdx = currentStepRef.current;
         const bestEv = events[stepIdx];
-        if (!bestEv || bestEv.notes.length !== 1) return;
+
+        if (!bestEv || bestEv.notes.length !== 1) {
+          if (debugEnabledRef.current) {
+            recordDebugOnset({
+              capturedAtMs: Date.now(),
+              rms: payload.rms,
+              flux: payload.flux,
+              fluxThreshold: payload.fluxThreshold,
+              expectedMidi: 0,
+              expectedNote: "—",
+              evidenceCount: 0,
+              evidenceMidis: [],
+              verifyResult: {
+                ok: false,
+                detectedMidi: null,
+                cents: null,
+                harmonicSupport: 0,
+                method: "none",
+                failureReason: "no_pitch_detected",
+              },
+              skipped: true,
+              skipReason: "No active calibration event",
+            });
+          }
+          return;
+        }
 
         const n = bestEv.notes[0]!;
-        if (verdictsRef.current.has(verdictKey(bestEv.id, n.string))) return;
+        if (verdictsRef.current.has(verdictKey(bestEv.id, n.string))) {
+          if (debugEnabledRef.current) {
+            recordDebugOnset({
+              capturedAtMs: Date.now(),
+              rms: payload.rms,
+              flux: payload.flux,
+              fluxThreshold: payload.fluxThreshold,
+              expectedMidi: n.midi,
+              expectedNote:
+                meta.tuning.length === 6 ? (meta.tuning[6 - n.string] ?? "?") : "?",
+              evidenceCount: 0,
+              evidenceMidis: [],
+              verifyResult: {
+                ok: false,
+                detectedMidi: null,
+                cents: null,
+                harmonicSupport: 0,
+                method: "none",
+                failureReason: "no_pitch_detected",
+              },
+              skipped: true,
+              skipReason: "String already verified",
+            });
+          }
+          return;
+        }
 
         const onsetCtxMs = payload.audioContextTime * 1000;
         const evidence = basicPitchRef.current?.midisEvidenceAt(onsetCtxMs) ?? new Set<number>();
@@ -240,6 +354,21 @@ export function StringCalibrationFlow({
           payload.sampleRate,
           evidence,
         );
+
+        if (debugEnabledRef.current) {
+          recordDebugOnset({
+            capturedAtMs: Date.now(),
+            rms: payload.rms,
+            flux: payload.flux,
+            fluxThreshold: payload.fluxThreshold,
+            expectedMidi: n.midi,
+            expectedNote:
+              meta.tuning.length === 6 ? (meta.tuning[6 - n.string] ?? "?") : "?",
+            evidenceCount: evidence.size,
+            evidenceMidis: [...evidence].sort((a, b) => a - b),
+            verifyResult: v,
+          });
+        }
 
         if (!v.ok || v.detectedMidi == null) return;
 
@@ -280,7 +409,7 @@ export function StringCalibrationFlow({
       };
 
       capture.setOnsetHandler(onPayload);
-      await capture.connect(stream);
+      await capture.connect(stream, { gain: DEFAULT_PREAMP_GAIN });
 
       const det = new BasicPitchDetector(tr.ctx);
       basicPitchRef.current = det;
@@ -302,7 +431,7 @@ export function StringCalibrationFlow({
     } finally {
       setBusy(false);
     }
-  }, [calibrationChart, requestMic]);
+  }, [calibrationChart, meta.tuning, recordDebugOnset, requestMic]);
 
   const onStartCalibration = useCallback(async () => {
     const tr = transportRef.current;
@@ -391,6 +520,14 @@ export function StringCalibrationFlow({
   const expectPitchLabel =
     gpString != null && meta.tuning.length === 6 ? meta.tuning[6 - gpString] : undefined;
 
+  const debugPanel = (
+    <CalibrationDebugPanel
+      enabled={debugEnabled}
+      onToggle={setDebugEnabled}
+      snapshot={debugSnapshot}
+    />
+  );
+
   const header = (
     <div className="space-y-1 shrink-0">
       <p className="text-xs uppercase tracking-wide text-zinc-500">String calibration</p>
@@ -429,6 +566,7 @@ export function StringCalibrationFlow({
         )}
       </p>
       {micError ? <p className="text-sm text-amber-400 mt-2">{micError}</p> : null}
+      {debugPanel}
     </div>
   );
 

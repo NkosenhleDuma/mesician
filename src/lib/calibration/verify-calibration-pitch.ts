@@ -14,11 +14,26 @@ import { yinAroundExpected } from "@/lib/scoring/yin";
 
 const SEMI_TOL = 0.55;
 
+export type VerifyCalibrationMethod =
+  | "basic_pitch_evidence"
+  | "yin"
+  | "spectrum"
+  | "none";
+
+export type VerifyCalibrationFailureReason =
+  | "evidence_mismatch"
+  | "no_evidence_yin_failed"
+  | "yin_out_of_tolerance"
+  | "spectrum_mismatch"
+  | "no_pitch_detected";
+
 export type VerifyCalibrationPitchResult = {
   ok: boolean;
   detectedMidi: number | null;
   cents: number | null;
   harmonicSupport: number;
+  method: VerifyCalibrationMethod;
+  failureReason: VerifyCalibrationFailureReason | null;
 };
 
 export function verifyCalibrationPitch(
@@ -41,7 +56,14 @@ export function verifyCalibrationPitch(
     }
     const cents =
       detectedMidi != null ? 1200 * Math.log2(midiToFreq(detectedMidi) / midiToFreq(expectedMidi)) : null;
-    return { ok, detectedMidi, cents, harmonicSupport };
+    return {
+      ok,
+      detectedMidi,
+      cents,
+      harmonicSupport,
+      method: "basic_pitch_evidence",
+      failureReason: ok ? null : "evidence_mismatch",
+    };
   }
 
   const expectedHz = midiToFreq(expectedMidi);
@@ -51,7 +73,14 @@ export function verifyCalibrationPitch(
   let cents: number | null = y != null ? 1200 * Math.log2(y.hz / midiToFreq(expectedMidi)) : null;
 
   if (cmOk && y != null && cents != null && Math.abs(cents) <= MONO_CENTS_TOLERANCE) {
-    return { ok: true, detectedMidi, cents, harmonicSupport };
+    return {
+      ok: true,
+      detectedMidi,
+      cents,
+      harmonicSupport,
+      method: "yin",
+      failureReason: null,
+    };
   }
 
   const coarse = inferMidiFromSpectrum(spectrum, sampleRate);
@@ -62,7 +91,24 @@ export function verifyCalibrationPitch(
   ) {
     detectedMidi = coarse;
     cents = 1200 * Math.log2(midiToFreq(coarse) / midiToFreq(expectedMidi));
-    return { ok: true, detectedMidi, cents, harmonicSupport };
+    return {
+      ok: true,
+      detectedMidi,
+      cents,
+      harmonicSupport,
+      method: "spectrum",
+      failureReason: null,
+    };
+  }
+
+  let failureReason: VerifyCalibrationFailureReason = "no_pitch_detected";
+  if (y != null) {
+    failureReason =
+      cmOk && cents != null && Math.abs(cents) > MONO_CENTS_TOLERANCE
+        ? "yin_out_of_tolerance"
+        : "no_evidence_yin_failed";
+  } else if (coarse != null) {
+    failureReason = "spectrum_mismatch";
   }
 
   return {
@@ -70,5 +116,7 @@ export function verifyCalibrationPitch(
     detectedMidi,
     cents,
     harmonicSupport,
+    method: "none",
+    failureReason,
   };
 }

@@ -75,7 +75,7 @@ export function NoteGameShell() {
     void loadHistory();
   };
 
-  if (screen === "play" && state.gameState !== "idle" && state.gameState !== "finished") {
+  if (screen === "play" && state.gameState !== "finished") {
     return <NoteGamePlay state={state} onStop={handleStop} />;
   }
 

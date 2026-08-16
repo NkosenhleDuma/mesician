@@ -2,7 +2,10 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AudioCaptureWorklet } from "@/lib/audio/audio-capture-worklet";
+import {
+  AudioCaptureWorklet,
+  DEFAULT_PREAMP_GAIN,
+} from "@/lib/audio/audio-capture-worklet";
 import {
   detectPitchFromPcm,
   InTuneTracker,
@@ -29,7 +32,6 @@ const MIC_CONSTRAINTS: MediaStreamConstraints = {
 const PCM_SAMPLES = 2048;
 const POLL_INTERVAL_MS = 50;
 const STALE_PITCH_MS = 500;
-const PREAMP_GAIN = 3.0;
 
 type TunerState = "idle" | "starting" | "tuning" | "complete";
 
@@ -207,7 +209,7 @@ export function TunerClient() {
       await ctx.resume();
 
       const capture = new AudioCaptureWorklet(ctx);
-      await capture.connect(stream, { gain: PREAMP_GAIN });
+      await capture.connect(stream, { gain: DEFAULT_PREAMP_GAIN });
       captureRef.current = capture;
 
       setState("tuning");

@@ -1,7 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AudioCaptureWorklet } from "@/lib/audio/audio-capture-worklet";
+import {
+  AudioCaptureWorklet,
+  DEFAULT_PREAMP_GAIN,
+} from "@/lib/audio/audio-capture-worklet";
 import { BasicPitchDetector } from "@/lib/detection/basic-pitch-detector";
 import { NoteGameEngine } from "./game-engine";
 import { NoteOnTracker } from "./note-on-tracker";
@@ -125,7 +128,7 @@ export function useNoteGame() {
       await ctx.resume().catch(() => {});
 
       const capture = new AudioCaptureWorklet(ctx);
-      await capture.connect(stream);
+      await capture.connect(stream, { gain: DEFAULT_PREAMP_GAIN });
       captureRef.current = capture;
 
       const detector = new BasicPitchDetector(ctx);

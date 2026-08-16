@@ -56,7 +56,11 @@ import {
   type PolyRecognizerTrace,
   type ScoreOnsetAgainstEventResult,
 } from "@/lib/scoring/recognize";
-import { AudioCaptureWorklet, type OnsetPayload } from "@/lib/audio/audio-capture-worklet";
+import {
+  AudioCaptureWorklet,
+  DEFAULT_PREAMP_GAIN,
+  type OnsetPayload,
+} from "@/lib/audio/audio-capture-worklet";
 import { clampSpeed } from "./practice-constants";
 import { HighwayCanvas, type TimingFlashPayload } from "./HighwayCanvas";
 import { MobilePlayShell } from "./MobilePlayShell";
@@ -1176,7 +1180,7 @@ export function PracticeClient({
       capture = new AudioCaptureWorklet(ctx);
       capture.setOnsetHandler(onCapturePayload);
       try {
-        await capture.connect(stream);
+        await capture.connect(stream, { gain: DEFAULT_PREAMP_GAIN });
         if (!cancelled) {
           const det = basicPitchDetectorRef.current ?? new BasicPitchDetector(ctx);
           basicPitchDetectorRef.current = det;

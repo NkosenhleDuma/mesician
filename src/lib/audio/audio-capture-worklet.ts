@@ -4,6 +4,9 @@
 
 const MODULE_PATH = "/worklets/audio-capture-processor.js";
 
+/** Default mic pre-amplification gain applied before capture processing. */
+export const DEFAULT_PREAMP_GAIN = 3.0;
+
 const modulePromises = new WeakMap<AudioContext, Promise<void>>();
 
 export async function ensureAudioCaptureWorklet(ctx: AudioContext): Promise<void> {
