@@ -138,12 +138,16 @@ export class PitchSmoother {
 
 export class InTuneTracker {
   private inTuneStartMs: number | null = null;
+  private lastOutOfTuneMs: number | null = null;
+  private progressAtOutOfTune = 0;
   private readonly thresholdCents: number;
   private readonly requiredDurationMs: number;
+  private readonly gracePeriodMs: number;
 
-  constructor(thresholdCents = 5, requiredDurationMs = 1000) {
+  constructor(thresholdCents = 5, requiredDurationMs = 1000, gracePeriodMs = 200) {
     this.thresholdCents = thresholdCents;
     this.requiredDurationMs = requiredDurationMs;
+    this.gracePeriodMs = gracePeriodMs;
   }
 
   update(cents: number): boolean {
@@ -151,24 +155,47 @@ export class InTuneTracker {
     const isInTune = Math.abs(cents) <= this.thresholdCents;
 
     if (isInTune) {
+      this.lastOutOfTuneMs = null;
       if (this.inTuneStartMs === null) {
         this.inTuneStartMs = now;
       }
       const duration = now - this.inTuneStartMs;
       return duration >= this.requiredDurationMs;
-    } else {
-      this.inTuneStartMs = null;
-      return false;
     }
+
+    if (this.lastOutOfTuneMs === null) {
+      this.lastOutOfTuneMs = now;
+      this.progressAtOutOfTune = this.getProgressInternal(now);
+    }
+    if (now - this.lastOutOfTuneMs > this.gracePeriodMs) {
+      this.inTuneStartMs = null;
+    }
+    return false;
   }
 
   reset(): void {
     this.inTuneStartMs = null;
+    this.lastOutOfTuneMs = null;
+    this.progressAtOutOfTune = 0;
+  }
+
+  private getProgressInternal(now: number): number {
+    if (this.inTuneStartMs === null) return 0;
+    const duration = now - this.inTuneStartMs;
+    return Math.min(1, duration / this.requiredDurationMs);
   }
 
   getProgress(): number {
+    const now = performance.now();
     if (this.inTuneStartMs === null) return 0;
-    const duration = performance.now() - this.inTuneStartMs;
-    return Math.min(1, duration / this.requiredDurationMs);
+
+    if (this.lastOutOfTuneMs !== null) {
+      const outDuration = now - this.lastOutOfTuneMs;
+      if (outDuration >= this.gracePeriodMs) return 0;
+      const decay = 1 - outDuration / this.gracePeriodMs;
+      return this.progressAtOutOfTune * decay;
+    }
+
+    return this.getProgressInternal(now);
   }
 }

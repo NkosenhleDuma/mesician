@@ -121,6 +121,11 @@ export class BasicPitchDetector {
     return this.stabilizer.midisEvidenceAt(anchorCtxMs);
   }
 
+  /** Stable active pitches from the polyphonic ledger. */
+  snapshotActiveNotes() {
+    return this.stabilizer.snapshot();
+  }
+
   /**
    * Pitches that overlap the anchor in the stabilizer ledger but are excluded from the
    * scored evidence set (cap / confidence gate).

@@ -28,6 +28,8 @@ const MIC_CONSTRAINTS: MediaStreamConstraints = {
 
 const PCM_SAMPLES = 2048;
 const POLL_INTERVAL_MS = 50;
+const STALE_PITCH_MS = 500;
+const PREAMP_GAIN = 3.0;
 
 type TunerState = "idle" | "starting" | "tuning" | "complete";
 
@@ -63,6 +65,7 @@ export function TunerClient() {
   const pollIntervalRef = useRef<number | null>(null);
   const smootherRef = useRef<PitchSmoother>(new PitchSmoother(5));
   const trackerRef = useRef<InTuneTracker>(new InTuneTracker(5, 1000));
+  const lastValidPitchTimeRef = useRef<number | null>(null);
 
   const cleanup = useCallback(() => {
     if (pollIntervalRef.current !== null) {
@@ -90,6 +93,7 @@ export function TunerClient() {
     setInTuneProgress(0);
     smootherRef.current.reset();
     trackerRef.current.reset();
+    lastValidPitchTimeRef.current = null;
   }, []);
 
   const handleTuningChange = useCallback(
@@ -107,6 +111,7 @@ export function TunerClient() {
     setCompletedStrings((prev) => new Set(prev).add(currentStringIndex));
     smootherRef.current.reset();
     trackerRef.current.reset();
+    lastValidPitchTimeRef.current = null;
     setCents(null);
     setInTuneProgress(0);
 
@@ -122,6 +127,17 @@ export function TunerClient() {
     const capture = captureRef.current;
     if (!capture) return;
 
+    const clearIfStale = () => {
+      const lastValid = lastValidPitchTimeRef.current;
+      if (lastValid === null) return;
+      if (performance.now() - lastValid > STALE_PITCH_MS) {
+        setCents(null);
+        trackerRef.current.reset();
+        setInTuneProgress(0);
+        lastValidPitchTimeRef.current = null;
+      }
+    };
+
     try {
       const { pcm, sampleRate } = await capture.requestPcmTail(PCM_SAMPLES, 500);
       const targetMidi = getStringMidi(tuning, currentStringIndex);
@@ -130,6 +146,7 @@ export function TunerClient() {
       const result = detectPitchFromPcm(pcm, sampleRate, targetMidi);
 
       if (result && result.confidence > 0.5) {
+        lastValidPitchTimeRef.current = performance.now();
         const smoothedCents = smootherRef.current.push(result.cents);
         setCents(smoothedCents);
 
@@ -140,12 +157,10 @@ export function TunerClient() {
           advanceToNextString();
         }
       } else {
-        setCents(null);
-        trackerRef.current.reset();
-        setInTuneProgress(0);
+        clearIfStale();
       }
     } catch {
-      // Ignore timeout errors during polling
+      clearIfStale();
     }
   }, [tuning, currentStringIndex, advanceToNextString]);
 
@@ -192,7 +207,7 @@ export function TunerClient() {
       await ctx.resume();
 
       const capture = new AudioCaptureWorklet(ctx);
-      await capture.connect(stream);
+      await capture.connect(stream, { gain: PREAMP_GAIN });
       captureRef.current = capture;
 
       setState("tuning");

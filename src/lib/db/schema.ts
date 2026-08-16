@@ -69,3 +69,14 @@ export const practiceSessions = pgTable("practice_sessions", {
   endedAt: timestamp("ended_at", { withTimezone: true }),
   scoreJson: jsonb("score_json"),
 });
+
+export const noteGameSessions = pgTable("note_game_sessions", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  userId: uuid("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  config: jsonb("config").notNull(),
+  result: jsonb("result").notNull(),
+  startedAt: timestamp("started_at", { withTimezone: true }).notNull(),
+  endedAt: timestamp("ended_at", { withTimezone: true }).notNull(),
+});

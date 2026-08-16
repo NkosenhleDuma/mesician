@@ -16,6 +16,9 @@ export async function Nav() {
           </Link>
           {session ? (
             <>
+              <Link href="/exercises" className="text-zinc-300 hover:text-white">
+                Exercises
+              </Link>
               <Link href="/library" className="text-zinc-300 hover:text-white">
                 Library
               </Link>

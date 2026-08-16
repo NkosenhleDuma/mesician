@@ -46,6 +46,11 @@ export type PcmTailPayload = {
 
 export type OnsetHandler = (payload: OnsetPayload) => void;
 
+export type CaptureConnectOptions = {
+  /** Pre-amplification gain multiplier (default 1.0 = no boost). */
+  gain?: number;
+};
+
 /** Mic / file → AudioWorkletNode (no outputs); forwards onset messages to handler. */
 export class AudioCaptureWorklet {
   private node: AudioWorkletNode | null = null;
@@ -55,6 +60,8 @@ export class AudioCaptureWorklet {
   private inputNodeOwner: AudioNode | null = null;
 
   private hearGain: GainNode | null = null;
+
+  private preAmpGain: GainNode | null = null;
 
   private handler: OnsetHandler | null = null;
 
@@ -150,7 +157,7 @@ export class AudioCaptureWorklet {
     this.handler = handler;
   }
 
-  async connect(stream: MediaStream): Promise<void> {
+  async connect(stream: MediaStream, options?: CaptureConnectOptions): Promise<void> {
     await ensureAudioCaptureWorklet(this.ctx);
     this.disconnect();
     const node = new AudioWorkletNode(this.ctx, "audio-capture-processor", {
@@ -160,7 +167,19 @@ export class AudioCaptureWorklet {
     });
     node.port.onmessage = this.boundOnMessage;
     const src = this.ctx.createMediaStreamSource(stream);
-    src.connect(node);
+
+    const gainValue = options?.gain ?? 1.0;
+    if (gainValue !== 1.0) {
+      const gain = this.ctx.createGain();
+      gain.gain.value = gainValue;
+      src.connect(gain);
+      gain.connect(node);
+      this.preAmpGain = gain;
+    } else {
+      src.connect(node);
+      this.preAmpGain = null;
+    }
+
     this.node = node;
     this.streamSource = src;
     this.inputNodeOwner = null;
@@ -210,7 +229,28 @@ export class AudioCaptureWorklet {
       node.port.onmessage = null;
     }
 
-    if (this.streamSource && node) {
+    if (this.streamSource && this.preAmpGain) {
+      try {
+        this.streamSource.disconnect(this.preAmpGain);
+      } catch {
+        /* ignore */
+      }
+    }
+    if (this.preAmpGain && node) {
+      try {
+        this.preAmpGain.disconnect(node);
+      } catch {
+        /* ignore */
+      }
+    }
+    if (this.preAmpGain) {
+      try {
+        this.preAmpGain.disconnect();
+      } catch {
+        /* ignore */
+      }
+    }
+    if (this.streamSource && node && !this.preAmpGain) {
       try {
         this.streamSource.disconnect(node);
       } catch {
@@ -257,5 +297,6 @@ export class AudioCaptureWorklet {
     this.streamSource = null;
     this.inputNodeOwner = null;
     this.hearGain = null;
+    this.preAmpGain = null;
   }
 }
