@@ -1,11 +1,21 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { getDifficulty, getRegion } from "@/lib/exercises/note-selection/config";
 import { modeLabel } from "@/lib/exercises/note-selection/challenge-generator";
 import type { NoteGameState } from "@/lib/exercises/note-selection/types";
 import { ChallengeDisplay } from "./ChallengeDisplay";
-import { FretboardCanvas } from "./FretboardCanvas";
 import { GameHUD } from "./GameHUD";
+
+const FretboardCanvas = dynamic(
+  () => import("./FretboardCanvas").then((m) => m.FretboardCanvas),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="w-full h-48 sm:h-56 rounded-lg border border-zinc-800 bg-zinc-950/60" />
+    ),
+  },
+);
 
 export type NoteGamePlayProps = {
   state: NoteGameState;
