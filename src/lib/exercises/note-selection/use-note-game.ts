@@ -143,6 +143,7 @@ export function useNoteGame() {
       startPolling();
       return true;
     } catch (err) {
+      console.error("[NoteGame] Mic init failed:", err);
       setMicError(describeMicError(err));
       cleanupAudio();
       return false;

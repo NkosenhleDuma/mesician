@@ -32,6 +32,7 @@ export function NoteGameShell() {
   const [lastResult, setLastResult] = useState<NoteGameSessionResult | null>(null);
   const [history, setHistory] = useState<HistorySession[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [isStarting, setIsStarting] = useState(false);
 
   const loadHistory = useCallback(async () => {
     setHistoryLoading(true);
@@ -54,9 +55,14 @@ export function NoteGameShell() {
   }, [state.gameState, screen, stopSession]);
 
   const handleStart = async (config: NoteGameSessionConfig) => {
+    setIsStarting(true);
     setLastResult(null);
-    const engine = await startSession(config);
-    if (engine) setScreen("play");
+    try {
+      const engine = await startSession(config);
+      if (engine) setScreen("play");
+    } finally {
+      setIsStarting(false);
+    }
   };
 
   const handleStop = () => {
@@ -104,6 +110,7 @@ export function NoteGameShell() {
       onStart={handleStart}
       onViewHistory={handleViewHistory}
       micError={micError}
+      isStarting={isStarting}
       onRequestMic={() => void initDetector()}
     />
   );

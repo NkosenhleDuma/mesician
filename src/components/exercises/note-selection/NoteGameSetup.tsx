@@ -11,9 +11,10 @@ import type { NoteGameSessionConfig } from "@/lib/exercises/note-selection/types
 import { useState } from "react";
 
 export type NoteGameSetupProps = {
-  onStart: (config: NoteGameSessionConfig) => void;
+  onStart: (config: NoteGameSessionConfig) => void | Promise<void>;
   onViewHistory: () => void;
   micError: string | null;
+  isStarting?: boolean;
   onRequestMic: () => void;
 };
 
@@ -28,6 +29,7 @@ export function NoteGameSetup({
   onStart,
   onViewHistory,
   micError,
+  isStarting = false,
   onRequestMic,
 }: NoteGameSetupProps) {
   const [config, setConfig] = useState<NoteGameSessionConfig>(() => getStoredNoteGameConfig());
@@ -41,8 +43,9 @@ export function NoteGameSetup({
   };
 
   const handleStart = () => {
+    if (isStarting) return;
     setStoredNoteGameConfig(config);
-    onStart(config);
+    void onStart(config);
   };
 
   return (
@@ -189,14 +192,16 @@ export function NoteGameSetup({
         <button
           type="button"
           onClick={handleStart}
-          className="rounded-md bg-sky-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-sky-500"
+          disabled={isStarting}
+          className="rounded-md bg-sky-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-60 disabled:cursor-not-allowed"
         >
-          Start session
+          {isStarting ? "Starting…" : "Start session"}
         </button>
         <button
           type="button"
           onClick={onViewHistory}
-          className="rounded-md border border-zinc-700 px-5 py-2.5 text-sm text-zinc-300 hover:border-zinc-500 hover:text-white"
+          disabled={isStarting}
+          className="rounded-md border border-zinc-700 px-5 py-2.5 text-sm text-zinc-300 hover:border-zinc-500 hover:text-white disabled:opacity-60 disabled:cursor-not-allowed"
         >
           View history
         </button>
