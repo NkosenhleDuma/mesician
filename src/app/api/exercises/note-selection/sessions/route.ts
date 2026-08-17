@@ -57,9 +57,21 @@ const postBodySchema = z.object({
   result: sessionResultSchema,
 });
 
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+};
+
+export async function OPTIONS() {
+  return new Response(null, { status: 204, headers: corsHeaders });
+}
+
 export async function GET(req: Request) {
   const session = await getSession();
-  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!session) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401, headers: corsHeaders });
+  }
 
   const url = new URL(req.url);
   const difficulty = url.searchParams.get("difficulty");
@@ -84,25 +96,30 @@ export async function GET(req: Request) {
     return true;
   });
 
-  return NextResponse.json({
-    sessions: filtered.map((row) => ({
-      id: row.id,
-      startedAt: row.startedAt.toISOString(),
-      endedAt: row.endedAt.toISOString(),
-      config: row.config,
-      result: row.result,
-    })),
-  });
+  return NextResponse.json(
+    {
+      sessions: filtered.map((row) => ({
+        id: row.id,
+        startedAt: row.startedAt.toISOString(),
+        endedAt: row.endedAt.toISOString(),
+        config: row.config,
+        result: row.result,
+      })),
+    },
+    { headers: corsHeaders },
+  );
 }
 
 export async function POST(req: Request) {
   const session = await getSession();
-  if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!session) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401, headers: corsHeaders });
+  }
 
   const json = await req.json().catch(() => null);
   const parsed = postBodySchema.safeParse(json);
   if (!parsed.success) {
-    return NextResponse.json({ error: "Invalid body" }, { status: 400 });
+    return NextResponse.json({ error: "Invalid body" }, { status: 400, headers: corsHeaders });
   }
 
   const { result } = parsed.data;
@@ -119,5 +136,5 @@ export async function POST(req: Request) {
     })
     .returning();
 
-  return NextResponse.json({ session: row });
+  return NextResponse.json({ session: row }, { headers: corsHeaders });
 }

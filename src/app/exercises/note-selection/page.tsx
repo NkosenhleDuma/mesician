@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
-import { NoteGameShell } from "@/components/exercises/note-selection/NoteGameShell";
+import { NoteGameShellLoader } from "@/components/exercises/note-selection/NoteGameShellLoader";
 import { getSession } from "@/lib/auth/session";
 
 export const metadata: Metadata = {
@@ -14,7 +14,7 @@ export default async function NoteSelectionPage() {
 
   return (
     <div className="max-w-3xl mx-auto">
-      <NoteGameShell />
+      <NoteGameShellLoader />
     </div>
   );
 }
